@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "the-reader"
+version = "0.3.0"
+description = "The Reader: read a codebase layer by layer, with maps, flowcharts and plain-English explanations."
+readme = "README.md"
+license = "PolyForm-Noncommercial-1.0.0"
+license-files = ["LICENSE.md", "THIRD_PARTY_NOTICES.md"]
+authors = [{ name = "Ravada Siddharth (Sidvortex)" }]
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.140",
+  "uvicorn>=0.35",
+  "tree-sitter>=0.25",
+  "tree-sitter-python>=0.25",
+  "anthropic>=1.0",
+]
+
+[project.urls]
+Source = "https://github.com/Sidvortex/The-Reader"
+
+[project.scripts]
+the-reader = "thereader.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["thereader*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+thereader = ["frontend_build/**/*", "examples/*.py"]
