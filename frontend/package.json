@@ -1,0 +1,31 @@
+{
+  "name": "the-reader-frontend",
+  "private": true,
+  "version": "0.3.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && node scripts/third-party-notices.mjs",
+    "typecheck": "tsc --noEmit",
+    "notices": "node scripts/third-party-notices.mjs"
+  },
+  "dependencies": {
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@fontsource-variable/lexend": "^5.3.0",
+    "@shikijs/langs": "^4.5.0",
+    "@shikijs/themes": "^4.5.0",
+    "@xyflow/react": "12.12.0",
+    "elkjs": "0.12.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "shiki": "4.5.0"
+  },
+  "devDependencies": {
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "@vitejs/plugin-react": "6.1.2",
+    "typescript": "7.0.2",
+    "vite": "8.3.4"
+  },
+  "license": "SEE LICENSE IN ../LICENSE.md"
+}
