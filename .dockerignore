@@ -1,0 +1,9 @@
+# The image only needs the Python package (the interface is already built into src/thereader/frontend_build).
+.git
+frontend
+**/__pycache__
+**/*.pyc
+src/*.egg-info
+*.egg-info
+.venv
+venv
