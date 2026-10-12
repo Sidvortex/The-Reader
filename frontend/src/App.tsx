@@ -1,13 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { api } from "./api";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { api, getAiKey, setAiKey } from "./api";
 import FileWorkspace from "./FileWorkspace";
 import OpenFolder, { loadRecents, saveRecent } from "./OpenFolder";
 import RepoWorkspace from "./RepoWorkspace";
 import { parseRepoHash, repoHash, ROOT } from "./route";
-import type { Analysis, Health, RepoIndex } from "./types";
+import type { Analysis, Health, RepoIndex, RepoStatus } from "./types";
 
 type Theme = "light" | "dark";
 type Screen = { kind: "welcome" } | { kind: "file"; analysis: Analysis } | { kind: "repo"; id: string };
+
+const EXAMPLES = ["psf/requests", "pallets/flask", "encode/httpx"];
 
 function initialTheme(): Theme {
   try {
@@ -16,6 +18,21 @@ function initialTheme(): Theme {
   } catch { /* storage unavailable */ }
   return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
+
+/** Close a popover on Escape or a click outside it. */
+function useDismiss(open: boolean, ref: RefObject<HTMLDivElement | null>, close: () => void) {
+  useEffect(() => {
+    if (!open) return;
+    const onEvent = (e: MouseEvent | KeyboardEvent) => {
+      if (e instanceof KeyboardEvent ? e.key === "Escape" : !ref.current?.contains(e.target as Node)) close();
+    };
+    document.addEventListener("mousedown", onEvent);
+    document.addEventListener("keydown", onEvent);
+    return () => { document.removeEventListener("mousedown", onEvent); document.removeEventListener("keydown", onEvent); };
+  }, [open, ref, close]);
+}
+
+const masked = (k: string) => (k.length > 16 ? `${k.slice(0, 10)}…${k.slice(-4)}` : "••••");
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>({ kind: "welcome" });
@@ -28,8 +45,19 @@ export default function App() {
   const [paste, setPaste] = useState("");
   const [dragging, setDragging] = useState(false);
   const [folderOpen, setFolderOpen] = useState(false);
+  const [keyOpen, setKeyOpen] = useState(false);
+  const [key, setKey] = useState<string | null>(getAiKey);
+  const [keyDraft, setKeyDraft] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
   const popover = useRef<HTMLDivElement>(null);
+  const keyPopover = useRef<HTMLDivElement>(null);
+  useDismiss(folderOpen, popover, useCallback(() => setFolderOpen(false), []));
+  useDismiss(keyOpen, keyPopover, useCallback(() => setKeyOpen(false), []));
+
+  const publicMode = !!health?.public;
+  // a website pays for AI with the visitor's own key, unless it offers some free explanations itself
+  const aiPossible = !!health && (health.ai || (publicMode && !!key));
+  const aiOn = ai && aiPossible;
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -58,7 +86,8 @@ export default function App() {
     document.title = "The Reader";
   }, []);
 
-  /** A project link from a reload or bookmark. If the server restarted, reopen it from the recent list. */
+  /** A project link from a reload, a bookmark or someone else. The server reads GitHub projects again by
+   *  itself; a folder opened before a restart is reopened from the recent list. */
   const resumeRepo = useCallback(async (id: string) => {
     try {
       await api.repoStatus(id);
@@ -69,17 +98,20 @@ export default function App() {
         try { showRepo((await api.repoOpen(r.path)).id); return; } catch { /* fall through */ }
       }
       window.history.replaceState(null, "", location.pathname);
-      setError("That project isn't open any more. Open its folder again.");
+      setError("That project isn't open any more. Open it again.");
     }
   }, [showRepo]);
 
   useEffect(() => {
-    api.health().then(setHealth).catch(() => setError("Can't reach The Reader's server. Is the-reader still running in your terminal?"));
+    api.health().then(setHealth).catch(() => setError("Can't reach The Reader's server. If you started it in a terminal, is the-reader still running?"));
     const fromHash = parseRepoHash(location.hash);
     api.initial()
       .then((init) => {
         if (fromHash) return resumeRepo(fromHash.id);
-        if (init?.kind === "repo") return showRepo(init.id);
+        if (init?.kind === "repo") {
+          if (init.path) window.history.replaceState({ readerDepth: 0 }, "", repoHash(init.id, { ...ROOT, path: init.path }));
+          return showRepo(init.id);
+        }
         if (init?.kind === "file") return showFile(init.analysis);
       })
       .catch(() => { if (fromHash) resumeRepo(fromHash.id); });
@@ -100,24 +132,23 @@ export default function App() {
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
-  useEffect(() => {
-    if (!folderOpen) return;
-    const close = (e: MouseEvent | KeyboardEvent) => {
-      if (e instanceof KeyboardEvent ? e.key === "Escape" : !popover.current?.contains(e.target as Node)) setFolderOpen(false);
-    };
-    document.addEventListener("mousedown", close);
-    document.addEventListener("keydown", close);
-    return () => { document.removeEventListener("mousedown", close); document.removeEventListener("keydown", close); };
-  }, [folderOpen]);
-
-  const openFolder = async (path: string) => {
+  /** A folder path or a GitHub link (on a website, only links). */
+  const openProject = async (text: string) => {
     setBusy(true);
     setError(null);
     try {
-      const st = await api.repoOpen(path);
-      saveRecent({ id: st.id, path: st.root, name: st.name });
-      window.history.pushState({ readerDepth: 0 }, "", repoHash(st.id, ROOT));
-      showRepo(st.id);
+      const st: RepoStatus = await api.repoOpen(text);
+      saveRecent({ id: st.id, path: st.root, name: st.source ? `${st.source.owner}/${st.source.repo}` : st.name });
+      // a link into the project that's already open just moves there, and Back returns
+      const same = screen.kind === "repo" && screen.id === st.id;
+      const depth = same ? ((window.history.state?.readerDepth as number) ?? 0) + 1 : 0;
+      window.history.pushState({ readerDepth: depth }, "", repoHash(st.id, { ...ROOT, path: st.path ?? "" }));
+      if (same) {
+        window.dispatchEvent(new PopStateEvent("popstate", { state: window.history.state }));
+        setFolderOpen(false);
+      } else {
+        showRepo(st.id);
+      }
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -139,7 +170,19 @@ export default function App() {
     analyze(f.name, await f.text());
   };
 
+  const saveKey = (k: string) => {
+    setAiKey(k);
+    setKey(getAiKey());
+    setKeyDraft("");
+    setAi(true);
+    setKeyOpen(false);
+  };
+
   const dropAllowed = screen.kind !== "repo";
+  const aiTitle = aiPossible
+    ? `Explanations by ${health?.model}${publicMode && key ? ", paid with your API key" : ""}`
+    : publicMode ? "Add your Anthropic API key (the key button) to turn on AI explanations"
+      : "Set ANTHROPIC_API_KEY before starting the-reader to turn on AI explanations";
 
   return (
     <div
@@ -162,27 +205,61 @@ export default function App() {
         )}
         {screen.kind === "repo" && repoIndex && (
           <div className="file-meta">
-            <strong title={repoIndex.root}>{repoIndex.name}</strong>
+            <strong title={repoIndex.root}>{repoIndex.source ? `${repoIndex.source.owner}/${repoIndex.source.repo}` : repoIndex.name}</strong>
             <span>{repoIndex.stats.py_analyzed.toLocaleString()} Python files</span>
             {repoIndex.git?.branch && <span className="branch">{repoIndex.git.branch}</span>}
           </div>
         )}
         <div className="top-actions">
-          <label className={`ai-toggle${health?.ai ? "" : " off"}`}
-            title={health?.ai ? `Explanations by ${health.model}` : "Set ANTHROPIC_API_KEY before starting the-reader to turn on AI explanations"}>
-            <input type="checkbox" checked={ai && !!health?.ai} disabled={!health?.ai} onChange={(e) => setAi(e.target.checked)} />
+          <label className={`ai-toggle${aiPossible ? "" : " off"}`} title={aiTitle}>
+            <input type="checkbox" checked={aiOn} disabled={!aiPossible} onChange={(e) => setAi(e.target.checked)} />
             <span className="switch" aria-hidden />
             AI explanations
           </label>
+          {publicMode && (
+            <div className="popover-anchor" ref={keyPopover}>
+              <button className={`ghost${key ? " key-set" : ""}`} aria-expanded={keyOpen} onClick={() => setKeyOpen((o) => !o)}
+                title={key ? "Your Anthropic API key is set" : "Add your Anthropic API key for AI explanations"}>
+                {key ? "Key ✓" : "Add key"}
+              </button>
+              {keyOpen && (
+                <div className="popover key-popover" role="dialog" aria-label="Your Anthropic API key">
+                  <p>
+                    AI explanations here use your own Anthropic API key. It stays in this browser and is sent only with
+                    explanation requests; the server uses it for that request and doesn't keep it.
+                  </p>
+                  {key ? (
+                    <div className="key-row">
+                      <code>{masked(key)}</code>
+                      <button className="ghost small" onClick={() => { setAiKey(null); setKey(null); }}>Remove</button>
+                    </div>
+                  ) : (
+                    <form className="key-row" onSubmit={(e) => { e.preventDefault(); if (keyDraft.trim()) saveKey(keyDraft); }}>
+                      <label htmlFor="ai-key" className="visually-hidden">Anthropic API key</label>
+                      <input id="ai-key" type="password" value={keyDraft} onChange={(e) => setKeyDraft(e.target.value)}
+                        placeholder="sk-ant-…" autoComplete="off" spellCheck={false} autoFocus />
+                      <button className="primary" type="submit" disabled={!keyDraft.trim()}>Save</button>
+                    </form>
+                  )}
+                  <p className="hint">
+                    No key yet? Make one at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer">console.anthropic.com</a>.
+                    Everything else works without one.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
           <button className="ghost" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} aria-label="Toggle dark mode">
             {theme === "dark" ? "☀" : "☾"}
           </button>
           {screen.kind !== "welcome" && (
             <div className="popover-anchor" ref={popover}>
-              <button className="ghost" aria-expanded={folderOpen} onClick={() => setFolderOpen((o) => !o)}>Open folder</button>
+              <button className="ghost" aria-expanded={folderOpen} onClick={() => setFolderOpen((o) => !o)}>
+                {publicMode ? "Open link" : "Open project"}
+              </button>
               {folderOpen && (
-                <div className="popover" role="dialog" aria-label="Open a project folder">
-                  <OpenFolder onOpen={openFolder} busy={busy} autoFocus compact />
+                <div className="popover" role="dialog" aria-label={publicMode ? "Open a GitHub link" : "Open a project"}>
+                  <OpenFolder onOpen={openProject} busy={busy} autoFocus compact publicMode={publicMode} />
                 </div>
               )}
             </div>
@@ -195,19 +272,36 @@ export default function App() {
       {error && <div className="banner" role="alert">{error}<button onClick={() => setError(null)} aria-label="Dismiss">✕</button></div>}
 
       {screen.kind === "repo" ? (
-        <RepoWorkspace key={screen.id} id={screen.id} ai={ai && !!health?.ai} onIndex={setRepoIndex}
+        <RepoWorkspace key={screen.id} id={screen.id} ai={aiOn} onIndex={setRepoIndex}
           onFail={(m) => { goHome(); setError(m); }} />
       ) : screen.kind === "file" ? (
-        <FileWorkspace analysis={screen.analysis} ai={ai && !!health?.ai} />
+        <FileWorkspace analysis={screen.analysis} ai={aiOn} />
       ) : (
         <main className="welcome">
           <div className="welcome-inner">
             <h1>Read code the way you'd explain it to someone.</h1>
-            <p className="lede">Open a project folder to get an overview, a map of how its folders and files depend on each other, and a flowchart for every function. Or read a single Python file.</p>
+            <p className="lede">
+              {publicMode
+                ? "Paste a link to a public GitHub repository to get an overview, a map of how its folders and files depend on each other, and a flowchart for every function. Or read a single Python file."
+                : "Open a project folder or a GitHub link to get an overview, a map of how its folders and files depend on each other, and a flowchart for every function. Or read a single Python file."}
+            </p>
             <section className="start-block">
-              <h2>Read a project</h2>
-              <OpenFolder onOpen={openFolder} busy={busy} />
-              <p className="hint">Or from a terminal: <code>the-reader path/to/project</code></p>
+              <h2>{publicMode ? "Read a project on GitHub" : "Read a project"}</h2>
+              <OpenFolder onOpen={openProject} busy={busy} publicMode={publicMode} />
+              {publicMode ? (
+                <p className="hint">
+                  Try{" "}
+                  {EXAMPLES.map((x, i) => (
+                    <span key={x}>
+                      <button className="link-btn" disabled={busy} onClick={() => openProject(`https://github.com/${x}`)}>{x}</button>
+                      {i < EXAMPLES.length - 1 ? ", " : ". "}
+                    </span>
+                  ))}
+                  Python projects work best. The first read of a big one takes a minute or two.
+                </p>
+              ) : (
+                <p className="hint">Or from a terminal: <code>the-reader path/to/project</code></p>
+              )}
             </section>
             <section className="start-block">
               <h2>Read one file</h2>
@@ -234,7 +328,9 @@ export default function App() {
             <footer className="credit">
               The Reader by <a href="https://github.com/Sidvortex" target="_blank" rel="noreferrer">Ravada Siddharth (Sidvortex)</a>.
               Free for personal, study and research use; commercial use needs written permission.{" "}
-              <a href="https://github.com/Sidvortex/The-Reader/blob/main/LICENSE.md" target="_blank" rel="noreferrer">License</a>
+              <a href="LICENSE.md" target="_blank" rel="noreferrer">License</a>
+              {" · "}
+              <a href="THIRD_PARTY_NOTICES.md" target="_blank" rel="noreferrer">Third-party notices</a>
             </footer>
           </div>
         </main>

@@ -4,7 +4,8 @@ export type Loc = { path: string; symbol: string | null; view: "map" | "flow" };
 export const ROOT: Loc = { path: "", symbol: null, view: "map" };
 
 // #/r/<repo id>/<path>?s=<symbol>&v=flow
-const RE = /^#\/r\/([0-9a-f]{6,40})(\/[^?]*)?(?:\?(.*))?$/;
+// A repo id is a hash for a folder, or gh~owner~repo~commit for a GitHub link (enough to fetch it again).
+const RE = /^#\/r\/([0-9a-f]{6,40}|gh~[A-Za-z0-9-]+~[A-Za-z0-9._-]+~[0-9a-f]{40})(\/[^?]*)?(?:\?(.*))?$/;
 
 export function parseRepoHash(hash: string): { id: string; loc: Loc } | null {
   const m = RE.exec(hash);

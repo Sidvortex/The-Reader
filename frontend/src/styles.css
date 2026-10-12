@@ -201,7 +201,7 @@ strong, b { font-weight: 600; }
 .snode { width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; gap: 3px; padding: 8px 12px; background: var(--node); border: 1px solid var(--rule); border-radius: 9px; cursor: pointer; transition: border-color 0.12s; }
 .snode:hover { border-color: var(--edge); }
 .snode-name { font: 500 14.5px/1.25 var(--ui); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.snode-sub { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
+.snode-sub { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
 .snode .pill { font-size: 12px; color: var(--teal); }
 .snode .heat { margin-left: auto; width: 34px; height: 4px; border-radius: 2px; background: var(--panel-2); overflow: hidden; }
 .snode .heat i { display: block; height: 100%; width: calc(15% + var(--heat) * 85%); background: color-mix(in srgb, var(--amber) calc(35% + var(--heat) * 65%), var(--rule)); border-radius: 2px; }
@@ -371,6 +371,17 @@ button.trow:hover, .trow.dir:hover { background: var(--panel-2); color: var(--in
 .popover-anchor { position: relative; }
 .popover { position: absolute; right: 0; top: calc(100% + 8px); width: min(440px, calc(100vw - 32px)); z-index: 30; background: var(--panel); border: 1px solid var(--rule); border-radius: 12px; padding: 12px; box-shadow: 0 12px 32px rgba(12, 22, 32, 0.16); }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* public mode: the visitor's own API key */
+.key-popover { width: min(380px, calc(100vw - 32px)); }
+.key-popover p { margin: 0 0 12px; font-size: 13.5px; line-height: 1.55; color: var(--ink-2); }
+.key-popover .hint { margin: 12px 0 0; font-size: 12.5px; color: var(--muted); }
+.key-popover a, .path-line a { color: inherit; text-underline-offset: 3px; }
+.key-row { display: flex; align-items: center; gap: 8px; }
+.key-row input { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid var(--rule); border-radius: 8px; background: var(--panel); color: var(--ink); font: 13px/1.4 var(--mono); }
+.key-row code { flex: 1; font: 13px/1.4 var(--mono); color: var(--ink-2); }
+.ghost.key-set { color: var(--ink); border-color: var(--edge); }
+.start-block .hint .link-btn { font-size: inherit; color: var(--ink-2); }
 
 /* Show code exactly as typed: no ligatures turning <= into ≤ or -> into an arrow.
    Kept last because the `font` shorthand above resets these properties. */

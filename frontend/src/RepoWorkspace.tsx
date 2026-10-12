@@ -65,7 +65,8 @@ export default function RepoWorkspace({ id, ai, onIndex, onFail }: Props) {
             setIndex(idx);
             onIndex(idx);
             document.title = `${idx.name} — The Reader`;
-            saveRecent({ id: idx.id, path: idx.root, name: idx.name }); // also projects opened from the terminal
+            // also projects opened from the terminal or from a shared link
+            saveRecent({ id: idx.id, path: idx.root, name: idx.source ? `${idx.source.owner}/${idx.source.repo}` : idx.name });
           }
         } else if (st.state === "scanning") {
           timer = window.setTimeout(tick, 250);
@@ -302,7 +303,8 @@ export default function RepoWorkspace({ id, ai, onIndex, onFail }: Props) {
         </div>
       </section>
       {isDir ? (
-        <RepoDetail index={index} dir={loc.path} ai={ai} linkPath={linkPath} onRescan={loc.path === "" ? rescan : undefined} />
+        <RepoDetail index={index} dir={loc.path} ai={ai} linkPath={linkPath}
+          onRescan={loc.path === "" && !index.source ? rescan : undefined} />
       ) : analysis ? (
         <DetailPanel analysis={analysis} selected={loc.symbol} lines={lines} ai={ai}
           onOpen={(sid) => go({ symbol: sid })}

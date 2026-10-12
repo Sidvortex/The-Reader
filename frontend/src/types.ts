@@ -59,7 +59,11 @@ export type Analysis = {
   repo?: { id: string; path: string; uses: string[]; used_by: string[]; own_packages?: string[] };
 };
 
-export type Health = { version: string; ai: boolean; model: string | null };
+/** ai: the server pays for AI explanations itself. public: running as a website (GitHub links, visitors' own keys). */
+export type Health = { version: string; ai: boolean; model: string | null; public?: boolean };
+
+/** Where a project came from when it was opened from a GitHub link. */
+export type Source = { kind: "github"; owner: string; repo: string; ref: string | null; commit: string; url: string };
 
 export type Explanation = { markdown: string; source: "ai" | "structural"; cached: boolean };
 
@@ -81,6 +85,7 @@ export type EntryPoint = { kind: "command" | "module" | "script"; label: string;
 
 export type RepoIndex = {
   id: string; root: string; name: string;
+  source?: Source | null;
   git: { branch: string | null; commit: string } | null;
   stats: DirStats & { py_analyzed: number };
   languages: { name: string; files: number; lines: number }[];
@@ -96,8 +101,11 @@ export type RepoIndex = {
 
 export type RepoStatus = {
   id: string; state: "scanning" | "ready" | "error"; error: string | null; name: string; root: string; phase: string; done: number; total: number;
+  source?: Source | null;
+  /** after opening a link to a folder or file inside a repo: where it pointed */
+  path?: string;
 };
 
-export type Initial = { kind: "file"; analysis: Analysis } | { kind: "repo"; id: string } | null;
+export type Initial = { kind: "file"; analysis: Analysis } | { kind: "repo"; id: string; path?: string } | null;
 
 export type RepoLevel = "repo" | "dir" | "file" | "symbol";
