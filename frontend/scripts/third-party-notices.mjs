@@ -1,7 +1,7 @@
 // Writes THIRD_PARTY_NOTICES.md: every package that ships inside the built interface, with its license text.
 // Runs after `vite build` (see package.json), so the notices always match what's bundled.
 import { execSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -44,5 +44,9 @@ for (const { name, version, path } of [...pkgs.values()].sort((a, b) => a.name.l
 const out = parts.join("\n");
 writeFileSync(join(project, "THIRD_PARTY_NOTICES.md"), out);
 const built = join(project, "src", "thereader", "frontend_build");
-if (existsSync(built)) writeFileSync(join(built, "THIRD_PARTY_NOTICES.md"), out);
+if (existsSync(built)) {
+  // served next to the page, so the license and notices are one click away even when The Reader runs as a website
+  writeFileSync(join(built, "THIRD_PARTY_NOTICES.md"), out);
+  copyFileSync(join(project, "LICENSE.md"), join(built, "LICENSE.md"));
+}
 console.log(`third-party notices: ${pkgs.size} packages`);
