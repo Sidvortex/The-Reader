@@ -4,7 +4,7 @@ import {
   type Edge, type Node, type NodeProps,
 } from "@xyflow/react";
 import type { Analysis, Call, FlowNodeKind, Sym } from "./types";
-import { chipLabel, layoutFlow, layoutMap, type Ghost } from "./layout";
+import { chipLabel, layoutFlow, layoutMap, maybeEntry, symSub, type Ghost } from "./layout";
 import { boundsOf, edgeTypes, flowSettings } from "./graphParts";
 
 type Nav = {
@@ -67,9 +67,7 @@ type SymData = { sym: Sym; label: string; onTrail: boolean; selected: boolean; n
 const SymNodeView = memo(function SymNodeView({ data }: NodeProps<Node<SymData>>) {
   const { sym, label, onTrail, selected, nav, dead, extIn } = data;
   const heat = Math.min(1, (sym.complexity - 1) / 12);
-  const sub = sym.kind === "module" ? "runs on import" :
-    sym.kind === "class" ? "class" :
-    `${sym.is_async ? "async " : ""}${sym.end_line - sym.start_line + 1} lines`;
+  const { text: sub, pill } = symSub(sym); // the layout sized the box for exactly this line
   return (
     <div className={`snode k-${sym.kind}${onTrail ? " trail" : ""}${selected ? " selected" : ""}`} onClick={() => nav.onOpen(sym.id)}
       title={`${sym.qualname}, complexity ${sym.complexity}${dead ? ". Nothing in this file calls it" : ""}${selected && sym.kind !== "class" ? ". Click again for its flowchart" : ""}`}>
@@ -77,8 +75,9 @@ const SymNodeView = memo(function SymNodeView({ data }: NodeProps<Node<SymData>>
       <div className="snode-name">{label}</div>
       <div className="snode-sub">
         <span>{sub}</span>
-        {dead && <span className="pill">entry?</span>}
-        {!!extIn && <span className="pill ext" title="Called from other files; they're listed beside the code">+{extIn} outside</span>}
+        {pill && (extIn
+          ? <span className="pill ext" title="Called from other files; they're listed beside the code">{pill}</span>
+          : <span className="pill">{pill}</span>)}
         <span className="heat" style={{ ["--heat" as any]: heat }} aria-label={`complexity ${sym.complexity}`}><i /></span>
       </div>
       <Handle type="source" position={Position.Right} className="h" />
@@ -177,8 +176,7 @@ function Inner({ analysis, view, selected, trail, lines, onOpen, onLines, onOpen
   if (!graph) return <div className="canvas-empty"><p>Laying out…</p></div>;
 
   const nav: Nav = { onOpen, onLines, onOpenExternal };
-  const dead = new Set(analysis.symbols.filter((s) => s.kind !== "module" && s.called_by.length === 0
-    && !(s.called_by_ext?.length) && !s.name.startsWith("__")).map((s) => s.id));
+  const dead = new Set(analysis.symbols.filter(maybeEntry).map((s) => s.id));
   const nodes = graph.nodes.map((n) =>
     n.type === "flow"
       ? { ...n, data: { ...n.data, nav, active: !!lines && (n.data as any).start_line === lines[0] && (n.data as any).end_line === lines[1] } }

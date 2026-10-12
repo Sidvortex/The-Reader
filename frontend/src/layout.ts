@@ -11,14 +11,28 @@ export type ElkEdgeData = {
   orient?: "v" | "h";
 };
 
-// Fonts must match styles.css (.fnode, .call-chip, .edge-label, .snode-name).
+// Fonts must match styles.css (.fnode, .call-chip, .edge-label, .snode-name, .snode-sub, .snode .pill).
 export const FONTS = {
   flow: '13px "JetBrains Mono Variable"',
   chip: '500 12.5px "Lexend Variable"',
   edge: '12px "Lexend Variable"',
   mapName: '500 14.5px "Lexend Variable"',
   mapSub: '12.5px "Lexend Variable"',
+  pill: '12px "Lexend Variable"',
 };
+
+/** Defined but never called from this file or (in repo mode) another one: maybe an entry point. */
+export function maybeEntry(s: Sym): boolean {
+  return s.kind !== "module" && s.called_by.length === 0 && !s.called_by_ext?.length && !s.name.startsWith("__");
+}
+
+/** The second line of a call-map box, before its complexity bar. */
+export function symSub(s: Sym): { text: string; pill: string | null } {
+  const text = s.kind === "module" ? "runs on import" : s.kind === "class" ? "class"
+    : `${s.is_async ? "async " : ""}${s.end_line - s.start_line + 1} lines`;
+  const ext = s.called_by_ext?.length ?? 0;
+  return { text, pill: ext ? `+${ext} outside` : maybeEntry(s) ? "entry?" : null };
+}
 
 const fileStem = (path: string) => path.split("/").pop()!.replace(/\.pyi?$/, "");
 
@@ -230,10 +244,15 @@ export async function layoutMap(a: Analysis, trail: string[]): Promise<{ nodes: 
   const ids = new Set(syms.map((s) => s.id));
   const label = (s: Sym) => (s.kind === "module" ? "module code" : s.qualname);
   const { ghosts, edges: ghostEdges } = a.repo ? ghostsFor(a, syms) : { ghosts: [], edges: [] };
+  // wide enough for the name and for the line under it (size, pill, complexity bar), so neither wraps
+  const subWidth = (s: Sym) => {
+    const { text, pill } = symSub(s);
+    return textWidth(text, FONTS.mapSub) + (pill ? 8 + textWidth(pill, FONTS.pill) : 0) + 8 + 34;
+  };
   const children = [
     ...syms.map((s) => ({
       id: s.id,
-      width: Math.min(340, Math.max(160, Math.ceil(textWidth(label(s), FONTS.mapName)) + 36)),
+      width: Math.min(360, Math.max(160, Math.ceil(Math.max(textWidth(label(s), FONTS.mapName), subWidth(s))) + 36)),
       height: 62,
     })),
     ...ghosts.map((g) => ({
