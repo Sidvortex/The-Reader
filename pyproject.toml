@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "the-reader"
-version = "0.3.0"
+version = "0.4.0"
 description = "The Reader: read a codebase layer by layer, with maps, flowcharts and plain-English explanations."
 readme = "README.md"
 license = "PolyForm-Noncommercial-1.0.0"

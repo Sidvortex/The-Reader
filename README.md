@@ -1,6 +1,6 @@
 # The Reader
 
-Read code the way you'd explain it to someone. Point The Reader at a project folder and read it in layers, from what the project is for down to how one function works:
+Read code the way you'd explain it to someone. Point The Reader at a project folder or a GitHub link and read it in layers, from what the project is for down to how one function works:
 
 1. **Overview**: what the project does (from its README), what it's written in, where it starts (commands, `python -m`, scripts), what it depends on, and which files everything else leans on.
 2. **Folder map**: the folders and files inside a folder, arranged top to bottom by who uses whom. Point at a box to see everything it connects to.
@@ -43,13 +43,28 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
 ## Use
 
 ```bash
-the-reader ~/code/some-project      # read a whole project
-the-reader path/to/file.py          # read one file
-the-reader                          # start page: open a folder, or drop in a file
+the-reader ~/code/some-project                  # read a whole project
+the-reader https://github.com/pallets/flask     # read a public project on GitHub
+the-reader path/to/file.py                      # read one file
+the-reader                                      # start page: open a folder or link, or drop in a file
 the-reader . --port 9000 --no-browser
 ```
 
-You can also open a folder from the start page by typing or pasting its path; recent projects are listed there.
+You can also open a folder or a GitHub link from the start page by typing or pasting it; recent projects are listed there.
+
+### GitHub links
+
+Paste any of these:
+
+| Link | Opens |
+| --- | --- |
+| `https://github.com/owner/repo` (or `owner/repo`) | the default branch |
+| `…/tree/<branch or tag>` | that branch or tag |
+| `…/tree/<branch>/some/folder` | that folder |
+| `…/blob/<branch>/path/to/file.py` | that file |
+| a link with a commit hash instead of a branch | that exact commit |
+
+The Reader downloads just that commit (no history) into `~/.cache/the-reader/github/`, keeps the most recently used few, and reuses them. Only public repositories work from a link; for a private one, clone it and open the folder. Each project's address names the exact commit (`#/r/gh~owner~repo~<commit>/…`), so a copied address opens the same code for someone else, even after The Reader restarts.
 
 The first time you open a big project it's indexed (Django, about 3,000 Python files, takes a few seconds on a modern laptop). The result is cached in `~/.cache/the-reader/`, so opening it again is quick. After you change the code, use **Read the folder again** on the overview.
 
@@ -76,6 +91,37 @@ Without a key everything except the AI write-ups works.
 
 Scroll moves the diagrams like a page; pinch or Ctrl/Cmd + scroll zooms.
 
+## Put it online
+
+The Reader can run as a website where anyone pastes a GitHub link or drops in a file. Start it in **public mode**: `the-reader --public`, or set `THE_READER_PUBLIC=1`. In public mode:
+
+- visitors can open GitHub links and single files, but never folders on the server;
+- AI explanations use each visitor's own Anthropic API key (the **Add key** button). The key stays in their browser and goes to the server only with explanation requests, which use it once and don't keep it;
+- the server's own `ANTHROPIC_API_KEY`, if you set one, pays for at most `THE_READER_AI_DAILY_LIMIT` new explanations a day across all visitors (0 unless you set it). Explanations already made are cached and cost nothing;
+- limits suit a small server: one project read at a time, up to 2,500 Python files each, two projects kept in memory.
+
+The `Dockerfile` builds that website (Python 3.13, git, public mode, port from `$PORT`), so hosts that build from a Dockerfile, such as Render or Railway, can run it straight from this repository:
+
+```bash
+docker build -t the-reader .
+docker run --rm -p 8765:8765 the-reader          # then open http://localhost:8765
+```
+
+| Variable | Public default | What it does |
+| --- | --- | --- |
+| `THE_READER_PUBLIC` | `1` in the Dockerfile | public mode |
+| `ANTHROPIC_API_KEY` | not set | the server's own key |
+| `THE_READER_AI_DAILY_LIMIT` | `0` | new AI explanations a day that the server's key pays for |
+| `THE_READER_MODEL` | `claude-sonnet-5-5` | the model for AI explanations |
+| `THE_READER_MAX_PY_FILES` | `2500` | Python files read per project |
+| `THE_READER_MAX_OPEN` | `2` | projects kept in memory (a Django-sized one needs about 250 MB) |
+| `THE_READER_MAX_BUSY` | `1` | projects read at the same time |
+| `THE_READER_WORKERS` | `1` | helper processes for reading big projects |
+| `THE_READER_KEEP_REPOS` | `6` | downloaded repositories kept on disk |
+| `THE_READER_MAX_DOWNLOAD_MB` / `THE_READER_MAX_CHECKOUT_MB` | `250` / `500` | biggest repository it will download / unpack |
+
+On a server with more memory, raise `THE_READER_MAX_OPEN`, `THE_READER_MAX_BUSY` and `THE_READER_WORKERS`.
+
 ## Project layout
 
 ```
@@ -84,6 +130,7 @@ The-Reader/                      project root: run pip install here
 ├── README.md
 ├── LICENSE.md                   PolyForm Noncommercial 1.0.0, with the credit lines
 ├── THIRD_PARTY_NOTICES.md       licenses of the libraries and fonts bundled in the interface
+├── Dockerfile                   runs The Reader as a website (public mode)
 ├── src/
 │   └── thereader/               the Python app (import thereader)
 │       ├── cli.py               the `the-reader` command
@@ -95,6 +142,7 @@ The-Reader/                      project root: run pip install here
 │       │   └── flowchart.py         turns a function body into a flowchart
 │       ├── repo/                repo mode
 │       │   ├── files.py         which files belong to the project, and their languages
+│       │   ├── github.py        GitHub links: which commit, a shallow download, size limits
 │       │   ├── modules.py       module names; resolves imports and calls between files
 │       │   ├── index.py         builds the project index: tree, links, entry points, README
 │       │   ├── summaries.py     overview and folder explanations, structural and AI
@@ -111,7 +159,10 @@ The-Reader/                      project root: run pip install here
 ## How it works
 
 ```
-project folder ─► list files (git ls-files, or a walk that skips venvs, node_modules, caches)
+GitHub link ─► resolve the branch, tag or commit ─► download that one commit (no history)
+                                                                  │
+project folder ◄──────────────────────────────────────────────────┘
+               ─► list files (git ls-files, or a walk that skips venvs, node_modules, caches)
                ─► analyse every Python file with tree-sitter (in parallel, cached by content)
                ─► module names (packages, src/ layout, folders without __init__.py)
                ─► resolve imports and calls between files ─► project index
@@ -141,6 +192,7 @@ npm run build                  # compiles into src/thereader/frontend_build and 
 - Python only. Other languages slot in as another analyzer returning the same data.
 - Links are worked out from the code, not by running it. A call on an object whose type can't be seen (an untyped parameter, a value returned from a function) is listed but not linked.
 - In flowcharts, an exception can jump from anywhere in a `try` block to its `except`; that's drawn as one arrow, not one per statement.
+- GitHub links work for public repositories only, and need `git` installed.
 
 ## License
 
