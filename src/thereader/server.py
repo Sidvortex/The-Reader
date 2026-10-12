@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import os
+import re
+import threading
 from collections import OrderedDict
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import __version__
+from . import __version__, explainer
 from .analyzer import UnsupportedLanguage, analyze
-from .explainer import ai_available, explain, model_name
-from .repo import jobs, summaries
+from .explainer import NoAIKey, ai_available, explain, model_name
+from .repo import github, index, jobs, summaries
 
 UI_DIR = Path(__file__).parent / "frontend_build"
 MAX_BYTES = 2_000_000
@@ -27,11 +30,33 @@ _initial: dict | None = None
 # page points its own domain at 127.0.0.1 to read your files through this server.
 _allowed_hosts: set[str] | None = {"127.0.0.1", "localhost", "::1", "testserver"}
 
+# Public mode is for running The Reader as a website. Visitors can read GitHub links and single files, but never
+# folders on the server, and AI explanations use their own API key (see explainer.py).
+PUBLIC = False
+
 
 def allow_any_host() -> None:
     """Used when the user deliberately serves on a network address (--host 0.0.0.0)."""
     global _allowed_hosts
     _allowed_hosts = None
+
+
+def enable_public() -> None:
+    global PUBLIC
+    PUBLIC = True
+    explainer.PUBLIC = True
+    allow_any_host()
+    # Sized for a small server (512 MB): one project read at a time, no helper processes, two projects in memory.
+    # A project the size of Django (about 2,900 Python files) needs about 250 MB while it's read.
+    index.MAX_PY_FILES = int(os.environ.get("THE_READER_MAX_PY_FILES", "2500"))
+    index.WORKERS = int(os.environ.get("THE_READER_WORKERS", "1"))
+    jobs.MAX_OPEN = int(os.environ.get("THE_READER_MAX_OPEN", "2"))
+    jobs._slots = threading.BoundedSemaphore(int(os.environ.get("THE_READER_MAX_BUSY", "1")))
+    github.KEEP = int(os.environ.get("THE_READER_KEEP_REPOS", "6"))
+
+
+if os.environ.get("THE_READER_PUBLIC", "").strip().lower() in ("1", "true", "yes", "on"):
+    enable_public()
 
 
 @app.middleware("http")
@@ -66,20 +91,39 @@ def open_initial(path: Path) -> None:
         _initial = {"kind": "file", "analysis": run_analysis(path.name, path.read_text(encoding="utf-8", errors="replace"))}
 
 
-def _ai_errors(fn):
+def open_initial_link(link: str) -> None:
+    """Open a GitHub link passed on the command line. Raises github.LinkError with a readable message."""
+    global _initial
+    job, path = jobs.open_github(link)
+    _initial = {"kind": "repo", "id": job.id, "path": path}
+
+
+def _ai_errors(fn, own_key: bool = False):
     try:
         return fn()
     except (KeyError, HTTPException):
         raise
+    except NoAIKey as e:
+        raise HTTPException(403, str(e))
     except Exception as e:  # surface API errors to the page instead of a bare 500
         status = getattr(e, "status_code", None)
-        if status == 401:
+        if status == 401 and own_key:
+            msg = "AI explanation failed: Anthropic rejected your API key. Check it with the key button at the top."
+        elif status == 401:
             msg = "AI explanation failed: the API key was rejected. Check ANTHROPIC_API_KEY and restart the-reader."
         elif status == 429:
             msg = "AI explanation failed: rate limited. Wait a moment and select it again."
         else:
-            msg = f"AI explanation failed: {e}"
+            msg = f"AI explanation failed: {type(e).__name__}"
+            if not PUBLIC:
+                msg += f": {e}"
         raise HTTPException(502, msg)
+
+
+def _visitor_key(value: str | None) -> str | None:
+    """A visitor's own Anthropic key from the X-Anthropic-Key header, used for this request only."""
+    value = (value or "").strip()
+    return value if 20 <= len(value) <= 300 and value.isascii() and " " not in value else None
 
 
 # ------------------------------------------------------------------ single files
@@ -96,7 +140,8 @@ class ExplainIn(BaseModel):
 
 @app.get("/api/health")
 def health():
-    return {"version": __version__, "ai": ai_available(), "model": model_name() if ai_available() else None}
+    # "ai": the server can pay for AI explanations without a visitor's own key
+    return {"version": __version__, "ai": ai_available(), "model": model_name(), "public": PUBLIC}
 
 
 @app.get("/api/initial")
@@ -121,13 +166,14 @@ def analyze_ep(body: AnalyzeIn):
 
 
 @app.post("/api/explain")
-def explain_ep(body: ExplainIn):
+def explain_ep(body: ExplainIn, x_anthropic_key: str | None = Header(default=None)):
     a = _analyses.get(body.hash)
     if a is None:
         raise HTTPException(404, "Analysis expired, re-open the file")
     if body.symbol != "<file>" and not any(s["id"] == body.symbol for s in a["symbols"]):
         raise HTTPException(404, "Unknown symbol")
-    return _ai_errors(lambda: explain(a, body.symbol, body.ai))
+    key = _visitor_key(x_anthropic_key)
+    return _ai_errors(lambda: explain(a, body.symbol, body.ai, api_key=key), own_key=bool(key))
 
 
 # ------------------------------------------------------------------ repos
@@ -147,6 +193,8 @@ def _ready_index(rid: str):
     job = jobs.get_job(rid)
     if job is None:
         raise HTTPException(404, "This project isn't open any more. Open the folder again.")
+    if job.state == "error":
+        raise HTTPException(409, job.error or "This project couldn't be read.")
     if job.state != "ready" or job.index is None:
         raise HTTPException(409, "This project is still being read.")
     return job.index
@@ -175,11 +223,26 @@ def _repo_file(rid: str, path: str) -> dict:
 
 @app.post("/api/repo/open")
 def repo_open(body: RepoOpenIn):
+    """Open a folder on this computer, or a GitHub link. A public server only takes links."""
+    text = body.path.strip()
+    if github.looks_like_github(text) or PUBLIC:
+        try:
+            job, path = jobs.open_github(text, allow_short=PUBLIC)
+        except github.LinkError as e:
+            raise HTTPException(400, str(e))
+        return {**job.status(), "path": path}
     try:
-        job = jobs.open_repo(body.path.strip())
+        job = jobs.open_repo(text)
     except (NotADirectoryError, FileNotFoundError, OSError) as e:
+        # "owner/repo" that isn't a folder here is probably a GitHub shorthand
+        if re.fullmatch(r"[\w.-]+/[\w.-]+", text) and not Path(text).expanduser().exists():
+            try:
+                job, path = jobs.open_github(text, allow_short=True)
+                return {**job.status(), "path": path}
+            except github.LinkError:
+                pass
         raise HTTPException(400, str(e))
-    return job.status()
+    return {**job.status(), "path": ""}
 
 
 @app.get("/api/repo/status")
@@ -201,19 +264,21 @@ def repo_file(id: str, path: str):
 
 
 @app.post("/api/repo/explain")
-def repo_explain(body: RepoExplainIn):
+def repo_explain(body: RepoExplainIn, x_anthropic_key: str | None = Header(default=None)):
     idx = _ready_index(body.id)
+    key = _visitor_key(x_anthropic_key)
     if body.level == "repo":
-        return _ai_errors(lambda: summaries.explain_overview(idx, body.ai))
+        return _ai_errors(lambda: summaries.explain_overview(idx, body.ai, key), own_key=bool(key))
     if body.level == "dir":
         if body.path not in idx.dirs:
             raise HTTPException(404, "Unknown folder")
-        return _ai_errors(lambda: summaries.explain_folder(idx, body.path, body.ai))
+        return _ai_errors(lambda: summaries.explain_folder(idx, body.path, body.ai, key), own_key=bool(key))
     a = _repo_file(body.id, body.path)
     sid = body.symbol or "<file>"
     if sid != "<file>" and not any(s["id"] == sid for s in a["symbols"]):
         raise HTTPException(404, "Unknown symbol")
-    return _ai_errors(lambda: explain(a, sid, body.ai, summaries.file_context(idx, a, sid)))
+    return _ai_errors(lambda: explain(a, sid, body.ai, summaries.file_context(idx, a, sid), api_key=key),
+                      own_key=bool(key))
 
 
 # ------------------------------------------------------------------ the page
@@ -227,5 +292,7 @@ if (UI_DIR / "index.html").exists():
         f = (UI_DIR / path).resolve()
         # only serve files that really live inside the built UI folder
         if path and f.is_file() and f.is_relative_to(_ui_root):
+            if f.suffix == ".md":  # the license and notices: show them as text instead of downloading
+                return FileResponse(f, media_type="text/plain; charset=utf-8")
             return FileResponse(f)
         return FileResponse(UI_DIR / "index.html")

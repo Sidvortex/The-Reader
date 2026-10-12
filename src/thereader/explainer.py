@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import os
@@ -18,8 +19,68 @@ def model_name() -> str:
     return os.environ.get("THE_READER_MODEL", DEFAULT_MODEL)
 
 
-def ai_available() -> bool:
-    return bool(os.environ.get("ANTHROPIC_API_KEY"))
+# ---------------------------------------------------------------- who pays for an AI explanation
+# On your own computer, your ANTHROPIC_API_KEY pays. On a public server (PUBLIC), visitors can send their own key
+# with a request; it's used for that request only and never stored. The server's own key, if it has one, pays for
+# at most THE_READER_AI_DAILY_LIMIT new explanations a day across all visitors (0 unless set). Explanations
+# already in the cache are free for everyone.
+PUBLIC = False
+
+
+class NoAIKey(Exception):
+    """No key can pay for a new AI explanation; the message says what to do."""
+
+
+_spent = {"day": "", "count": 0}
+_spent_lock = threading.Lock()
+
+
+def _shared_limit() -> int | None:
+    """New explanations a day the server's key pays for. None means no limit."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return 0
+    raw = os.environ.get("THE_READER_AI_DAILY_LIMIT", "").strip()
+    if not raw:
+        return 0 if PUBLIC else None
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 0 if PUBLIC else None
+
+
+def _today() -> str:
+    return datetime.date.today().isoformat()
+
+
+def ai_available(key: str | None = None) -> bool:
+    """Whether a new AI explanation can be paid for, by the visitor's key or the server's."""
+    if key:
+        return True
+    limit = _shared_limit()
+    if limit is None:
+        return True
+    with _spent_lock:
+        used = _spent["count"] if _spent["day"] == _today() else 0
+    return used < limit
+
+
+def _key_for_new_explanation(key: str | None) -> str:
+    if key:
+        return key
+    limit = _shared_limit()
+    if limit is not None:
+        with _spent_lock:
+            if _spent["day"] != _today():
+                _spent.update(day=_today(), count=0)
+            if _spent["count"] >= limit:
+                if not PUBLIC:
+                    raise NoAIKey("Set ANTHROPIC_API_KEY before starting the-reader to turn on AI explanations.")
+                if limit == 0:
+                    raise NoAIKey("AI explanations here use your own Anthropic API key. Add it with the key button at the top.")
+                raise NoAIKey("Today's free AI explanations have run out. Add your own Anthropic API key with the "
+                              "key button at the top to keep going.")
+            _spent["count"] += 1
+    return os.environ["ANTHROPIC_API_KEY"]
 
 
 # ---------------------------------------------------------------- cache
@@ -214,15 +275,15 @@ def _prompt(a: dict, sid: str, context: str = "") -> str:
     )
 
 
-def ai_markdown(prompt: str, key_parts: list, max_tokens: int = 900) -> dict:
-    """Ask Claude, caching the answer under everything that shaped the prompt."""
+def ai_markdown(prompt: str, key_parts: list, max_tokens: int = 900, api_key: str | None = None) -> dict:
+    """Ask Claude, caching the answer under everything that shaped the prompt. `api_key` is a visitor's own key."""
     key = hashlib.sha256(json.dumps([PROMPT_VERSION, model_name(), *key_parts]).encode()).hexdigest()
     hit = cache().get(key)
     if hit:
         return {"markdown": hit, "source": "ai", "cached": True}
     import anthropic
 
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(api_key=_key_for_new_explanation(api_key))
     msg = client.messages.create(
         model=model_name(), max_tokens=max_tokens, system=SYSTEM,
         messages=[{"role": "user", "content": prompt}],
@@ -232,9 +293,9 @@ def ai_markdown(prompt: str, key_parts: list, max_tokens: int = 900) -> dict:
     return {"markdown": md, "source": "ai", "cached": False}
 
 
-def explain(a: dict, sid: str, use_ai: bool, context: str = "") -> dict:
+def explain(a: dict, sid: str, use_ai: bool, context: str = "", api_key: str | None = None) -> dict:
     """Explain a function, class or (sid="<file>") the whole file. `context` adds repo-level facts."""
-    if not use_ai or not ai_available():
+    if not use_ai:
         return {"markdown": structural(a, sid), "source": "structural", "cached": False}
     code = a["source"] if sid == "<file>" else _code(a, _sym(a, sid), numbered=False)
-    return ai_markdown(_prompt(a, sid, context), [sid, code, _outline(a), context])
+    return ai_markdown(_prompt(a, sid, context), [sid, code, _outline(a), context], api_key=api_key)

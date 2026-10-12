@@ -26,10 +26,13 @@ def main() -> None:
         epilog="The Reader by Ravada Siddharth (Sidvortex). Free for non-commercial use with credit; see LICENSE.md.",
     )
     ap.add_argument("path", nargs="?",
-                    help="a Python file, or a project folder to read as a whole (optional; you can also open one from the page)")
+                    help="a Python file, a project folder, or a GitHub link (optional; you can also open one from the page)")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--no-browser", action="store_true", help="don't open a browser tab")
+    ap.add_argument("--public", action="store_true",
+                    help="run as a website: visitors read GitHub links and single files, never this computer's folders, "
+                         "and AI explanations use their own API key (same as THE_READER_PUBLIC=1)")
     args = ap.parse_args()
 
     if not _port_free(args.host, args.port):
@@ -38,24 +41,33 @@ def main() -> None:
 
     import uvicorn
 
+    from . import server
     from .analyzer import UnsupportedLanguage
-    from .server import allow_any_host, app, open_initial
+    from .repo.github import LinkError, looks_like_github
 
+    if args.public:
+        server.enable_public()
     if args.host not in ("127.0.0.1", "localhost", "::1"):
-        allow_any_host()
-    if args.path:
+        server.allow_any_host()
+    if args.path and looks_like_github(args.path):
+        print(f"Reading {args.path} …")
+        try:
+            server.open_initial_link(args.path)
+        except LinkError as e:
+            ap.error(str(e))
+    elif args.path:
         path = Path(args.path).expanduser()
         if not path.exists():
             ap.error(f"no such file or folder: {path}")
         try:
-            open_initial(path)
+            server.open_initial(path)
         except UnsupportedLanguage as e:
             ap.error(str(e))
         if path.is_dir():
             print(f"Reading the project in {path.resolve()} …")
 
     url = f"http://{args.host}:{args.port}"
-    print(f"The Reader is running at {url}  (Ctrl+C to stop)")
+    print(f"The Reader is running at {url}" + ("  (public mode)" if server.PUBLIC else "") + "  (Ctrl+C to stop)")
     if not args.no_browser:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    uvicorn.run(server.app, host=args.host, port=args.port, log_level="warning")
