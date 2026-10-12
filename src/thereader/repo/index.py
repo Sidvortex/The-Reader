@@ -22,7 +22,8 @@ from .files import NOT_CODE, FileEntry, list_files, read_text
 from .modules import ModuleMap
 from .worker import analyze_for_index
 
-MAX_PY_FILES = 8000
+MAX_PY_FILES = int(os.environ.get("THE_READER_MAX_PY_FILES", "8000"))
+WORKERS = int(os.environ.get("THE_READER_WORKERS", "0"))  # helper processes; 0 picks from the CPU count
 PARALLEL_FROM = 150  # uncached files before helper processes are worth starting
 SPECIAL_FILES = {"pyproject.toml", "setup.cfg", "setup.py", "package.json"}
 
@@ -65,10 +66,12 @@ def _first_para(doc: str | None, limit: int = 220) -> str | None:
 
 
 class RepoIndex:
-    def __init__(self, root: Path, progress: Progress | None = None, cache: AnalysisCache | None = None):
+    def __init__(self, root: Path, progress: Progress | None = None, cache: AnalysisCache | None = None,
+                 rid: str | None = None, name: str | None = None, source: dict | None = None):
         self.root = root.resolve()
-        self.name = self.root.name or str(self.root)
-        self.id = repo_id(self.root)
+        self.name = name or self.root.name or str(self.root)
+        self.id = rid or repo_id(self.root)
+        self.source = source  # where the files came from, for a GitHub link
         self.progress = progress or Progress()
         self.cache = cache
         self.notes: list[str] = []
@@ -134,7 +137,7 @@ class RepoIndex:
                 fresh[keys[path]] = analysis
             self.progress.done += 1
 
-        workers = min(8, os.cpu_count() or 1)
+        workers = WORKERS or min(8, os.cpu_count() or 1)
         if len(todo) >= PARALLEL_FROM and workers > 1 and _can_spawn():
             try:
                 ctx = multiprocessing.get_context("spawn")
@@ -361,6 +364,9 @@ class RepoIndex:
         return out
 
     def _git_info(self) -> dict | None:
+        if self.source:
+            return {"branch": self.source["ref"], "commit": self.source["commit"][:7]}
+
         def git(*args):
             try:
                 return subprocess.run(["git", "-C", str(self.root), *args], capture_output=True, text=True,
@@ -396,7 +402,8 @@ class RepoIndex:
             files[e.path] = info
         st = self.dirs[""]["stats"]
         return {
-            "id": self.id, "root": str(self.root), "name": self.name, "git": self.git,
+            "id": self.id, "root": self.source["url"] if self.source else str(self.root), "name": self.name,
+            "source": self.source, "git": self.git,
             "stats": {**st, "py_analyzed": len(self.py)},
             "languages": self.languages(),
             "readme": {k: v for k, v in self.readme.items() if k != "text"} if self.readme else None,
