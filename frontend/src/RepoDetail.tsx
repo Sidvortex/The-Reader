@@ -47,11 +47,11 @@ export default memo(function RepoDetail({ index, dir, ai, linkPath, onRescan }: 
         {loading && <p className="thinking">{isRoot ? "Reading the whole project…" : "Reading this folder…"}</p>}
         {error && <p className="err">{error}</p>}
         {ex && !loading && (
-          <p className="source-note">{ex.source === "ai" ? (ex.cached ? "AI explanation (cached)" : "AI explanation") : "Structural summary from the code"}</p>
+          <p className="source-note">{ex.source === "ai" ? "Written by AI" : "Summary worked out from the code"}</p>
         )}
         {aiEx && structural && (
           <details className="facts">
-            <summary>Facts from the code</summary>
+            <summary>Details from the code</summary>
             <Markdown md={structural.markdown} link={linkPath} />
           </details>
         )}

@@ -27,7 +27,7 @@ function ScanProgress({ status }: { status: RepoStatus | null }) {
         <div className="bar" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct ?? undefined}>
           <i style={{ width: `${pct ?? 6}%` }} />
         </div>
-        <p className="hint">The first read of a big project takes a little while. After that it's cached, and opening it again is quick.</p>
+        <p className="hint">The first read of a big project takes a little while. After that, opening it again is quick.</p>
       </div>
     </main>
   );

@@ -102,8 +102,7 @@ def _git_error(stderr: str, link: Link) -> str:
                 "private repositories can't be read from a link.")
     if any(w in s for w in ("could not resolve host", "unable to access", "connection", "timed out")):
         return "Couldn't reach GitHub. Check the internet connection and try again."
-    last = stderr.strip().splitlines()[-1] if stderr.strip() else "no details"
-    return f"GitHub didn't answer as expected ({last[:160]})."
+    return "GitHub didn't answer as expected. Check the link and try again."
 
 
 def _refs(link: Link, everything: bool) -> tuple[str | None, dict[str, str]]:

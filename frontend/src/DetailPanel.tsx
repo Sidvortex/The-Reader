@@ -90,7 +90,7 @@ export default memo(function DetailPanel({ analysis, selected, lines, ai, onOpen
         {ex && <Markdown md={ex.markdown} link={link} />}
         {loading && <p className="thinking">Writing a plain-English explanation…</p>}
         {error && <p className="err">{error}</p>}
-        {ex && !loading && <p className="source-note">{ex.source === "ai" ? (ex.cached ? "AI explanation (cached)" : "AI explanation") : "Structural summary from the code"}</p>}
+        {ex && !loading && <p className="source-note">{ex.source === "ai" ? "Written by AI" : "Summary worked out from the code"}</p>}
       </section>
 
       {sym && (internal.length > 0 || sym.called_by.length > 0 || outward.length > 0 || inward.length > 0 || libs.length > 0) && (

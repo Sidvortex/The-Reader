@@ -59,9 +59,9 @@ class RepoJob:
         except github.LinkError as e:
             self.error = str(e)
             self.state = "error"
-        except Exception as e:
+        except Exception:
             traceback.print_exc()
-            self.error = f"{type(e).__name__}: {e}"
+            self.error = "Something went wrong while reading this project. Try opening it again."
             self.state = "error"
 
     def status(self) -> dict:

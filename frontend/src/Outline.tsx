@@ -26,7 +26,7 @@ function Row({ s, depth, selected, visited, onSelect, step }: {
       {step !== undefined && s.parent && s.qualname !== s.name && (
         <span className="ocls">{s.qualname.slice(0, -s.name.length - 1)}</span>
       )}
-      {s.kind !== "class" && s.complexity >= 6 && <span className="cx" title={`complexity ${s.complexity}`}>{s.complexity}</span>}
+      {s.kind !== "class" && s.complexity >= 6 && <span className="cx" title={`Complexity ${s.complexity}: how many paths the code can take`}>{s.complexity}</span>}
     </button>
   );
 }

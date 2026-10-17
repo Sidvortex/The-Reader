@@ -70,7 +70,7 @@ const SymNodeView = memo(function SymNodeView({ data }: NodeProps<Node<SymData>>
   const { text: sub, pill } = symSub(sym); // the layout sized the box for exactly this line
   return (
     <div className={`snode k-${sym.kind}${onTrail ? " trail" : ""}${selected ? " selected" : ""}`} onClick={() => nav.onOpen(sym.id)}
-      title={`${sym.qualname}, complexity ${sym.complexity}${dead ? ". Nothing in this file calls it" : ""}${selected && sym.kind !== "class" ? ". Click again for its flowchart" : ""}`}>
+      title={`${sym.qualname}, complexity ${sym.complexity}${dead ? ". Nothing in this file uses it" : ""}${selected && sym.kind !== "class" ? ". Click again for its flowchart" : ""}`}>
       <Handle type="target" position={Position.Left} className="h" />
       <div className="snode-name">{label}</div>
       <div className="snode-sub">

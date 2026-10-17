@@ -31,7 +31,7 @@ export function symSub(s: Sym): { text: string; pill: string | null } {
   const text = s.kind === "module" ? "runs on import" : s.kind === "class" ? "class"
     : `${s.is_async ? "async " : ""}${s.end_line - s.start_line + 1} lines`;
   const ext = s.called_by_ext?.length ?? 0;
-  return { text, pill: ext ? `+${ext} outside` : maybeEntry(s) ? "entry?" : null };
+  return { text, pill: ext ? `+${ext} outside` : maybeEntry(s) ? "start?" : null };
 }
 
 const fileStem = (path: string) => path.split("/").pop()!.replace(/\.pyi?$/, "");
@@ -334,7 +334,7 @@ const plural = (n: number, w: string) => `${n.toLocaleString()} ${w}${n === 1 ? 
 export function dirSummary(index: RepoIndex, path: string): string {
   const st = index.dirs[path].stats;
   if (st.py_files) return `${plural(st.py_files, "Python file")}, ${st.lines.toLocaleString()} lines`;
-  return `${plural(st.files, "file")}, not analyzed yet`;
+  return `${plural(st.files, "file")}`;
 }
 
 export type FolderPair = { from: string; to: string; w: number; ghost: boolean };
