@@ -5,7 +5,7 @@ from pathlib import PurePath
 from .python_analyzer import analyze_python
 
 # Bump when the analyzer's output changes, so cached repo indexes are rebuilt.
-ANALYZER_VERSION = "3"
+ANALYZER_VERSION = "4"
 
 ANALYZERS = {".py": analyze_python, ".pyw": analyze_python, ".pyi": analyze_python}
 
@@ -22,7 +22,7 @@ def analyze(filename: str, source: str) -> dict:
         if not ext:
             fn = analyze_python
         else:
-            raise UnsupportedLanguage(f"{ext} files aren't supported yet (Python only in v0.1)")
+            raise UnsupportedLanguage(f"{ext} files can't be read yet. The Reader reads Python files (.py).")
     result = fn(filename, source)
     result["reading_order"] = reading_order(result)
     return result
