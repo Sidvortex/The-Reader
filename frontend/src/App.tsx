@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
-import { api, getAiKey, setAiKey } from "./api";
+import { api, getAi, setAi as saveAi, type AiSettings } from "./api";
 import FileWorkspace from "./FileWorkspace";
 import OpenFolder, { loadRecents, saveRecent } from "./OpenFolder";
 import RepoWorkspace from "./RepoWorkspace";
@@ -32,7 +32,7 @@ function useDismiss(open: boolean, ref: RefObject<HTMLDivElement | null>, close:
   }, [open, ref, close]);
 }
 
-const masked = (k: string) => (k.length > 16 ? `${k.slice(0, 10)}…${k.slice(-4)}` : "••••");
+const masked = (k: string) => (k.length > 12 ? `${k.slice(0, 4)}…${k.slice(-4)}` : "••••");
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>({ kind: "welcome" });
@@ -46,8 +46,9 @@ export default function App() {
   const [dragging, setDragging] = useState(false);
   const [folderOpen, setFolderOpen] = useState(false);
   const [keyOpen, setKeyOpen] = useState(false);
-  const [key, setKey] = useState<string | null>(getAiKey);
-  const [keyDraft, setKeyDraft] = useState("");
+  const [mine, setMine] = useState<AiSettings | null>(getAi);
+  const [draft, setDraft] = useState<AiSettings>({ key: "", provider: "", model: "", baseUrl: "" });
+  const [moreOpen, setMoreOpen] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const popover = useRef<HTMLDivElement>(null);
   const keyPopover = useRef<HTMLDivElement>(null);
@@ -56,7 +57,7 @@ export default function App() {
 
   const publicMode = !!health?.public;
   // a website pays for AI with the visitor's own key, unless it offers some free explanations itself
-  const aiPossible = !!health && (health.ai || (publicMode && !!key));
+  const aiPossible = !!health && (health.ai || !!mine);
   const aiOn = ai && aiPossible;
 
   useEffect(() => {
@@ -103,7 +104,7 @@ export default function App() {
   }, [showRepo]);
 
   useEffect(() => {
-    api.health().then(setHealth).catch(() => setError("Can't reach The Reader's server. If you started it in a terminal, is the-reader still running?"));
+    api.health().then(setHealth).catch(() => setError("The Reader can't be reached right now. Reload the page, or try again in a moment."));
     const fromHash = parseRepoHash(location.hash);
     api.initial()
       .then((init) => {
@@ -170,19 +171,21 @@ export default function App() {
     analyze(f.name, await f.text());
   };
 
-  const saveKey = (k: string) => {
-    setAiKey(k);
-    setKey(getAiKey());
-    setKeyDraft("");
+  const saveKey = () => {
+    saveAi(draft);
+    setMine(getAi());
+    setDraft({ key: "", provider: "", model: "", baseUrl: "" });
     setAi(true);
     setKeyOpen(false);
   };
+  const custom = draft.provider === "custom";
+  const canSave = custom ? /^https?:\/\/\S+$/.test(draft.baseUrl.trim()) : !!draft.key.trim();
+  const mineName = mine ? (health?.providers.find((p) => p.id === mine.provider)?.name ?? (mine.provider === "custom" ? "your AI server" : null)) : null;
 
   const dropAllowed = screen.kind !== "repo";
   const aiTitle = aiPossible
-    ? `Explanations by ${health?.model}${publicMode && key ? ", paid with your API key" : ""}`
-    : publicMode ? "Add your Anthropic API key (the key button) to turn on AI explanations"
-      : "Set ANTHROPIC_API_KEY before starting the-reader to turn on AI explanations";
+    ? mine ? "Explanations are written with your API key" : "Explanations are written by AI"
+    : "Add an API key (the Add key button) to turn on AI explanations";
 
   return (
     <div
@@ -200,7 +203,7 @@ export default function App() {
           <div className="file-meta">
             <strong>{screen.analysis.file.name}</strong>
             <span>{screen.analysis.file.lines} lines</span>
-            {screen.analysis.file.has_errors && <span className="warn" title="The parser hit a syntax error; parts of the file may be missing">syntax errors</span>}
+            {screen.analysis.file.has_errors && <span className="warn" title="This file has mistakes in its code, so parts of it may be missing">code errors</span>}
           </div>
         )}
         {screen.kind === "repo" && repoIndex && (
@@ -216,39 +219,65 @@ export default function App() {
             <span className="switch" aria-hidden />
             AI explanations
           </label>
-          {publicMode && (
-            <div className="popover-anchor" ref={keyPopover}>
-              <button className={`ghost${key ? " key-set" : ""}`} aria-expanded={keyOpen} onClick={() => setKeyOpen((o) => !o)}
-                title={key ? "Your Anthropic API key is set" : "Add your Anthropic API key for AI explanations"}>
-                {key ? "Key ✓" : "Add key"}
-              </button>
-              {keyOpen && (
-                <div className="popover key-popover" role="dialog" aria-label="Your Anthropic API key">
-                  <p>
-                    AI explanations here use your own Anthropic API key. It stays in this browser and is sent only with
-                    explanation requests; the server uses it for that request and doesn't keep it.
-                  </p>
-                  {key ? (
+          <div className="popover-anchor" ref={keyPopover}>
+            <button className={`ghost${mine ? " key-set" : ""}`} aria-expanded={keyOpen} onClick={() => setKeyOpen((o) => !o)}
+              title={mine ? "Your API key is set" : "Add an API key for AI explanations"}>
+              {mine ? "Key ✓" : "Add key"}
+            </button>
+            {keyOpen && (
+              <div className="popover key-popover" role="dialog" aria-label="API key for AI explanations">
+                <p>
+                  To get AI explanations, paste an API key from an AI service. It stays in this browser and is only
+                  used to write explanations. Keys from OpenAI, Google Gemini, Anthropic, Groq, Mistral, DeepSeek,
+                  xAI, OpenRouter and similar services work.
+                </p>
+                {mine ? (
+                  <div className="key-row">
+                    <code>{mine.key ? masked(mine.key) : "your AI server"}</code>
+                    {mineName && <span className="key-for">{mineName}</span>}
+                    <button className="ghost small" onClick={() => { saveAi(null); setMine(null); }}>Remove</button>
+                  </div>
+                ) : (
+                  <form className="key-form" onSubmit={(e) => { e.preventDefault(); if (canSave) saveKey(); }}>
                     <div className="key-row">
-                      <code>{masked(key)}</code>
-                      <button className="ghost small" onClick={() => { setAiKey(null); setKey(null); }}>Remove</button>
+                      <label htmlFor="ai-key" className="visually-hidden">API key</label>
+                      <input id="ai-key" type="password" value={draft.key} onChange={(e) => setDraft({ ...draft, key: e.target.value })}
+                        placeholder={custom ? "API key (if it needs one)" : "Paste your API key"} autoComplete="off" spellCheck={false} autoFocus />
+                      <button className="primary" type="submit" disabled={!canSave}>Save</button>
                     </div>
-                  ) : (
-                    <form className="key-row" onSubmit={(e) => { e.preventDefault(); if (keyDraft.trim()) saveKey(keyDraft); }}>
-                      <label htmlFor="ai-key" className="visually-hidden">Anthropic API key</label>
-                      <input id="ai-key" type="password" value={keyDraft} onChange={(e) => setKeyDraft(e.target.value)}
-                        placeholder="sk-ant-…" autoComplete="off" spellCheck={false} autoFocus />
-                      <button className="primary" type="submit" disabled={!keyDraft.trim()}>Save</button>
-                    </form>
-                  )}
-                  <p className="hint">
-                    No key yet? Make one at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer">console.anthropic.com</a>.
-                    Everything else works without one.
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
+                    <button type="button" className="link-btn" aria-expanded={moreOpen} onClick={() => setMoreOpen((o) => !o)}>
+                      {moreOpen ? "Hide options" : "Options"}
+                    </button>
+                    {moreOpen && (
+                      <div className="key-more">
+                        <label>
+                          Service
+                          <select value={draft.provider} onChange={(e) => setDraft({ ...draft, provider: e.target.value })}>
+                            <option value="">Detect from the key</option>
+                            {health?.providers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                            {health?.custom_server && <option value="custom">My own AI server</option>}
+                          </select>
+                        </label>
+                        {custom && (
+                          <label>
+                            Server address
+                            <input value={draft.baseUrl} onChange={(e) => setDraft({ ...draft, baseUrl: e.target.value })}
+                              placeholder="http://localhost:11434/v1" spellCheck={false} />
+                          </label>
+                        )}
+                        <label>
+                          <span>Model <span className="optional">(optional)</span></span>
+                          <input value={draft.model} onChange={(e) => setDraft({ ...draft, model: e.target.value })}
+                            placeholder="Leave empty to pick one for you" spellCheck={false} />
+                        </label>
+                      </div>
+                    )}
+                  </form>
+                )}
+                <p className="hint">Everything else works without a key.</p>
+              </div>
+            )}
+          </div>
           <button className="ghost" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} aria-label="Toggle dark mode">
             {theme === "dark" ? "☀" : "☾"}
           </button>
@@ -299,9 +328,7 @@ export default function App() {
                   ))}
                   Python projects work best. The first read of a big one takes a minute or two.
                 </p>
-              ) : (
-                <p className="hint">Or from a terminal: <code>the-reader path/to/project</code></p>
-              )}
+              ) : null}
             </section>
             <section className="start-block">
               <h2>Read one file</h2>

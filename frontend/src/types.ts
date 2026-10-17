@@ -60,7 +60,12 @@ export type Analysis = {
 };
 
 /** ai: the server pays for AI explanations itself. public: running as a website (GitHub links, visitors' own keys). */
-export type Health = { version: string; ai: boolean; model: string | null; public?: boolean };
+export type ProviderInfo = { id: string; name: string; model: string };
+export type Health = {
+  version: string; public: boolean;
+  ai: boolean; ai_name: string | null; // the server offers AI explanations itself
+  providers: ProviderInfo[]; custom_server: boolean;
+};
 
 /** Where a project came from when it was opened from a GitHub link. */
 export type Source = { kind: "github"; owner: string; repo: string; ref: string | null; commit: string; url: string };
