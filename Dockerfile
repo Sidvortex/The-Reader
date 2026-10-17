@@ -6,9 +6,9 @@
 # Hosts like Render and Railway build this file themselves and pass the port to use in $PORT.
 FROM python:3.13-slim
 
-# git downloads the repositories people paste
+# git downloads the repositories people paste; the DejaVu fonts let PDF exports show any language's text
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git \
+ && apt-get install -y --no-install-recommends git fonts-dejavu-core \
  && rm -rf /var/lib/apt/lists/*
 
 # run as an ordinary user, not root
