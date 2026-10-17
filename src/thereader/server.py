@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import __version__, explainer, llm
+from . import __version__, explainer, export, llm
 from .analyzer import UnsupportedLanguage, analyze
 from .explainer import NoAIKey, ai_available, explain
 from .repo import github, index, jobs, summaries
@@ -54,6 +54,9 @@ def enable_public() -> None:
     jobs.MAX_OPEN = int(os.environ.get("THE_READER_MAX_OPEN", "2"))
     jobs._slots = threading.BoundedSemaphore(int(os.environ.get("THE_READER_MAX_BUSY", "1")))
     github.KEEP = int(os.environ.get("THE_READER_KEEP_REPOS", "6"))
+    # documents: one made at a time, and shorter, so a small server keeps up
+    export._slots = threading.BoundedSemaphore(int(os.environ.get("THE_READER_EXPORTS_AT_ONCE", "1")))
+    export.MAX_SECTIONS = int(os.environ.get("THE_READER_EXPORT_MAX_SECTIONS", "1500"))
 
 
 if os.environ.get("THE_READER_PUBLIC", "").strip().lower() in ("1", "true", "yes", "on"):
@@ -301,6 +304,47 @@ def repo_explain(body: RepoExplainIn, request: Request):
     if sid != "<file>" and not any(s["id"] == sid for s in a["symbols"]):
         raise HTTPException(404, "That function isn't in this file.")
     return _ai_errors(lambda: explain(a, sid, body.ai, summaries.file_context(idx, a, sid), own=own))
+
+
+class ExportIn(BaseModel):
+    id: str
+    scope: str = ""  # a folder, or "" for the whole project
+    depth: str = "functions"  # folders | files | functions
+    format: str = "pdf"  # pdf | docx
+    skip_tests: bool = True
+
+
+@app.post("/api/repo/export")
+def repo_export(body: ExportIn):
+    """Start making a PDF or Word file of the project's explanation. Poll its status, then download it."""
+    idx = _ready_index(body.id)
+    try:
+        job = export.start(idx, body.scope, body.depth, body.format, body.skip_tests)
+    except KeyError:
+        raise HTTPException(404, "That folder isn't in this project.")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return job.status()
+
+
+def _export_job(id: str):
+    job = export.get(id)
+    if job is None:
+        raise HTTPException(404, "This document isn't available any more. Make it again.")
+    return job
+
+
+@app.get("/api/repo/export/status")
+def repo_export_status(id: str):
+    return _export_job(id).status()
+
+
+@app.get("/api/repo/export/file")
+def repo_export_file(id: str):
+    job = _export_job(id)
+    if job.state != "ready" or not job.path or not job.path.exists():
+        raise HTTPException(409, "This document isn't ready yet.")
+    return FileResponse(job.path, media_type=export.FORMATS[job.fmt][0], filename=job.filename)
 
 
 # ------------------------------------------------------------------ the page
