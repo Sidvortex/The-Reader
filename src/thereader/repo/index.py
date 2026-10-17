@@ -151,23 +151,64 @@ class RepoIndex:
             self.cache.put_many(fresh)
         return out
 
+    def _link_calls(self, f: str, a: dict) -> list[tuple[dict, tuple[str, str], bool]]:
+        """Point a file's calls at the functions they reach in other files (writing xfile/xsymbol into them),
+        including subclass versions of a method and properties that are read.
+        Returns (symbol, target, through a base class) for each link."""
+        out: list[tuple[dict, tuple[str, str], bool]] = []
+        mm = self.modmap
+        for s in a["symbols"]:
+            for c in s["calls"]:
+                hits, more = [], []
+                if "recv" in c:  # a call on a value whose class had to be worked out
+                    state, found, subs = mm.resolve_member(c["recv"], c["attr"], f)
+                    if state == "hit":
+                        hits = [h for h in found if h[0] != f]
+                        more = [] if c.get("super") else [o for o in subs if o[0] != f]
+                else:
+                    hit = mm.resolve_call(c, f)
+                    hits = [hit] if hit else []
+                if hits and c.get("kind") != "internal":
+                    c["xfile"], c["xsymbol"] = hits[0]
+                    out.append((s, hits[0], False))
+                    more = hits[1:] + more  # the value may be one of several classes
+                elif hits:
+                    more = hits + more
+                if isinstance(c.get("virtual"), str):  # self.method(): subclasses elsewhere may have their own
+                    more += [o for o in mm.overrides(f, c["virtual"], c["target"].rsplit(".", 1)[-1]) if o[0] != f]
+                more = [o for o in dict.fromkeys(tuple(x) for x in more) if o != (c.get("xfile"), c.get("xsymbol"))]
+                if more:
+                    c["xalso"] = [list(o) for o in more]
+                    out += [(s, o, True) for o in more]
+            for u in s.pop("uses", []):  # reading a property defined in another file
+                state, hits, _ = mm.resolve_member(u["recv"], u["attr"], f)
+                for hit in hits:
+                    sym = mm.symbols.get(hit[0], {}).get(hit[1])
+                    if hit[0] != f and sym and sym["kind"] in ("function", "method"):
+                        s["calls"].append({"name": u["name"], "kind": "external", "access": True, "xfile": hit[0],
+                                           "xsymbol": hit[1], "line": u["line"], "col": u["col"], "len": u["len"]})
+                        out.append((s, hit, False))
+        return out
+
     def _link(self) -> None:
         """Resolve imports and calls between files."""
         self.edges: dict[tuple[str, str], list[int]] = defaultdict(lambda: [0, 0])  # [imports, calls]
         self.called_by_ext: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
+        self.imported_by: dict[tuple[str, str], set[str]] = defaultdict(set)  # (file, name) -> files importing it
+        self.attr_users: dict[str, set[str]] = defaultdict(set)  # `.name` -> files where it appears
         for f, a in self.py.items():
             for target in self.modmap.import_targets(a, f):
                 self.edges[(f, target)][0] += 1
-            for s in a["symbols"]:
-                for c in s["calls"]:
-                    hit = self.modmap.resolve_call(c, f)
-                    if not hit:
-                        continue
-                    c["xfile"], c["xsymbol"] = hit
+            for name, hit in self.modmap.imported_names(a, f):
+                self.imported_by[hit].add(f)
+            for n in a.get("attr_names", ()):
+                self.attr_users[n].add(f)
+            for s, hit, via_base in self._link_calls(f, a):
+                if not via_base:  # the folder map shows direct use only
                     self.edges[(f, hit[0])][1] += 1
-                    callers = self.called_by_ext[hit]
-                    if (f, s["id"]) not in callers:
-                        callers.append((f, s["id"]))
+                callers = self.called_by_ext[hit]
+                if (f, s["id"]) not in callers:
+                    callers.append((f, s["id"]))
         self.used_by: dict[str, set[str]] = defaultdict(set)
         self.uses: dict[str, set[str]] = defaultdict(set)
         for (a, b) in self.edges:
@@ -324,7 +365,12 @@ class RepoIndex:
         guards = [f for f, a in self.py.items() if a["file"].get("main_guard") and not f.endswith("__main__.py")]
         guards.sort(key=lambda f: (bool(TESTY.search(f)), f.count("/"), f))
         for f in guards[:8]:
-            eps.append({"kind": "script", "label": f"python {f}", "file": f, "symbol": "<module>", "detail": None})
+            mod = self.modmap.canonical.get(f, "")
+            if "." in mod:  # part of a package: `python path/to/file.py` would break its imports
+                eps.append({"kind": "module", "label": f"python -m {mod}", "file": f, "symbol": "<module>",
+                            "detail": None})
+            else:
+                eps.append({"kind": "script", "label": f"python {f}", "file": f, "symbol": "<module>", "detail": None})
         return eps
 
     def _dependencies(self, texts: dict[str, bytes]) -> list[dict]:
@@ -422,13 +468,23 @@ class RepoIndex:
             raise KeyError(rel)
         a = analyze(rel.rsplit("/", 1)[-1], full.read_bytes().decode("utf-8", "replace"))
         a["file"]["path"] = rel
+        self._link_calls(rel, a)
         for s in a["symbols"]:
-            for c in s["calls"]:
-                hit = self.modmap.resolve_call(c, rel)
-                if hit:
-                    c["xfile"], c["xsymbol"] = hit
             s["called_by_ext"] = [{"file": f, "symbol": sid}
                                   for f, sid in self.called_by_ext.get((rel, s["qualname"]), [])]
+            if s["kind"] in ("function", "method", "class") and not s["called_by"] and not s["called_by_ext"]:
+                # nothing calls it that could be confirmed; say what else is known
+                users = sorted(self.imported_by.get((rel, s["qualname"]), ()))
+                if users:
+                    s["imported_by"] = users
+                if s["kind"] == "method" and not s["name"].startswith("__"):
+                    near = sorted(self.attr_users.get(s["name"], ()))
+                    if near:
+                        s["name_used_in"] = near
+                if s["kind"] == "method":
+                    outside = self.modmap.outside_bases(rel, s["qualname"].rsplit(".", 1)[0])
+                    if outside:
+                        s["outside_bases"] = outside
         a["repo"] = {"id": self.id, "path": rel, "own_packages": self.own_packages,
                      "uses": sorted(self.uses.get(rel, ())), "used_by": sorted(self.used_by.get(rel, ()))}
         return a
