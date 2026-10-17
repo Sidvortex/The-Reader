@@ -281,10 +281,19 @@ def _prompt(a: dict, sid: str, context: str = "") -> str:
     )
 
 
+def _cache_key(key_parts: list) -> str:
+    return hashlib.sha256(json.dumps([PROMPT_VERSION, *key_parts]).encode()).hexdigest()
+
+
+def cached_markdown(key_parts: list) -> str | None:
+    """An AI explanation that was already written, or None. Never asks the AI."""
+    return cache().get(_cache_key(key_parts))
+
+
 def ai_markdown(prompt: str, key_parts: list, max_tokens: int = 900, own: AIConfig | None = None) -> dict:
     """Ask an AI model, caching the answer under everything that shaped the prompt. `own` is the person's own key.
     The cache is shared by every model: once anyone has an explanation of some code, it's free for everyone."""
-    key = hashlib.sha256(json.dumps([PROMPT_VERSION, *key_parts]).encode()).hexdigest()
+    key = _cache_key(key_parts)
     hit = cache().get(key)
     if hit:
         return {"markdown": hit, "source": "ai", "cached": True}
@@ -293,9 +302,21 @@ def ai_markdown(prompt: str, key_parts: list, max_tokens: int = 900, own: AIConf
     return {"markdown": md, "source": "ai", "cached": False}
 
 
+def _key_parts(a: dict, sid: str, context: str) -> list:
+    code = a["source"] if sid == "<file>" else _code(a, _sym(a, sid), numbered=False)
+    return [sid, code, _outline(a), context]
+
+
 def explain(a: dict, sid: str, use_ai: bool, context: str = "", own: AIConfig | None = None) -> dict:
     """Explain a function, class or (sid="<file>") the whole file. `context` adds repo-level facts."""
     if not use_ai:
         return {"markdown": structural(a, sid), "source": "structural", "cached": False}
-    code = a["source"] if sid == "<file>" else _code(a, _sym(a, sid), numbered=False)
-    return ai_markdown(_prompt(a, sid, context), [sid, code, _outline(a), context], own=own)
+    return ai_markdown(_prompt(a, sid, context), _key_parts(a, sid, context), own=own)
+
+
+def explain_made(a: dict, sid: str, context: str = "") -> dict:
+    """The AI explanation if one was already written, otherwise the one worked out from the code. Free."""
+    md = cached_markdown(_key_parts(a, sid, context))
+    if md:
+        return {"markdown": md, "source": "ai", "cached": True}
+    return {"markdown": structural(a, sid), "source": "structural", "cached": False}

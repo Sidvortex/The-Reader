@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from ..explainer import ai_markdown
+from ..explainer import ai_markdown, cached_markdown
 from ..llm import AIConfig
 from ..text import doc_summary
 from .index import RepoIndex
@@ -199,7 +199,7 @@ def _file_outline(idx: RepoIndex, f: str) -> str:
     return "\n".join(out)
 
 
-def ai_overview(idx: RepoIndex, own: AIConfig | None = None) -> dict:
+def _overview_prompt(idx: RepoIndex) -> str:
     r = idx.readme
     eps = "\n".join(f"- {e['label']} -> {e['file']}" + (f" ({e['symbol']})" if e["symbol"] else "")
                     for e in idx.entry_points if e["file"]) or "none found"
@@ -219,10 +219,15 @@ def ai_overview(idx: RepoIndex, own: AIConfig | None = None) -> dict:
         "4. **Start reading here**: an ordered list of 3-6 files or functions, each with a few words on why.\n"
         "Write paths in backticks exactly as they appear in the structure above, relative to the project folder."
     )
+    return prompt
+
+
+def ai_overview(idx: RepoIndex, own: AIConfig | None = None) -> dict:
+    prompt = _overview_prompt(idx)
     return ai_markdown(prompt, ["overview", prompt], max_tokens=1100, own=own)
 
 
-def ai_folder(idx: RepoIndex, folder: str, own: AIConfig | None = None) -> dict:
+def _folder_prompt(idx: RepoIndex, folder: str) -> str:
     node = idx.dirs[folder]
     outline, used_chars = [], 0
     for f in node["files"]:
@@ -248,7 +253,31 @@ def ai_folder(idx: RepoIndex, folder: str, own: AIConfig | None = None) -> dict:
         "3. **How they connect**: 2-3 sentences, including how the rest of the project uses this folder.\n"
         "Write paths in backticks exactly as given."
     )
+    return prompt
+
+
+def ai_folder(idx: RepoIndex, folder: str, own: AIConfig | None = None) -> dict:
+    prompt = _folder_prompt(idx, folder)
     return ai_markdown(prompt, ["folder", prompt], max_tokens=900, own=own)
+
+
+def made_overview(idx: RepoIndex) -> dict:
+    """The AI overview if one was already written, otherwise the one worked out from the code. Free."""
+    prompt = _overview_prompt(idx)
+    md = cached_markdown(["overview", prompt])
+    if md:
+        return {"markdown": md, "source": "ai", "cached": True}
+    return {"markdown": structural_overview(idx), "source": "structural", "cached": False}
+
+
+def made_folder(idx: RepoIndex, folder: str) -> dict:
+    if not folder:
+        return made_overview(idx)
+    prompt = _folder_prompt(idx, folder)
+    md = cached_markdown(["folder", prompt])
+    if md:
+        return {"markdown": md, "source": "ai", "cached": True}
+    return {"markdown": structural_folder(idx, folder), "source": "structural", "cached": False}
 
 
 # ---------------------------------------------------------------- dispatch

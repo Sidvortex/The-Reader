@@ -6,6 +6,7 @@ import re
 
 _UNDERLINE = re.compile(r"\s*([=\-~^*#+`'\".:_])\1{2,}\s*")  # reStructuredText title lines: ====, ~~~~
 _FIELD = re.compile(r":[A-Za-z][\w ]*:")  # :copyright: (c) 2017 ..., :param x: ...
+_ROLE = re.compile(r":(?:[\w-]+:)+`~?!?([^`<]+?)(?:\s*<[^>]*>)?`")  # :func:`send_file`, :class:`~a.B` -> `send_file`
 
 
 def doc_summary(doc: str | None, limit: int | None = None) -> str | None:
@@ -31,6 +32,7 @@ def doc_summary(doc: str | None, limit: int | None = None) -> str | None:
             lines.pop()
         if lines:
             text = " ".join(" ".join(lines).split())
+            text = _ROLE.sub(lambda m: f"`{m.group(1).rsplit('.', 1)[-1] if m.group(0).count('~') else m.group(1)}`", text)
             if limit and len(text) > limit:
                 text = text[: limit - 1].rstrip() + "…"
             return text
