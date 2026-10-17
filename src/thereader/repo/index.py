@@ -17,6 +17,7 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 from ..analyzer import ANALYZER_VERSION, analyze
+from ..text import doc_summary
 from .cache import AnalysisCache
 from .files import NOT_CODE, FileEntry, list_files, read_text
 from .modules import ModuleMap
@@ -59,10 +60,7 @@ def _dir_of(path: str) -> str:
 
 
 def _first_para(doc: str | None, limit: int = 220) -> str | None:
-    if not doc:
-        return None
-    para = " ".join(doc.strip().split("\n\n")[0].split())
-    return para if len(para) <= limit else para[: limit - 1].rstrip() + "…"
+    return doc_summary(doc, limit)
 
 
 class RepoIndex:

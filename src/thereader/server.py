@@ -5,17 +5,18 @@ from __future__ import annotations
 import os
 import re
 import threading
+import traceback
 from collections import OrderedDict
 from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import __version__, explainer
+from . import __version__, explainer, llm
 from .analyzer import UnsupportedLanguage, analyze
-from .explainer import NoAIKey, ai_available, explain, model_name
+from .explainer import NoAIKey, ai_available, explain
 from .repo import github, index, jobs, summaries
 
 UI_DIR = Path(__file__).parent / "frontend_build"
@@ -98,32 +99,51 @@ def open_initial_link(link: str) -> None:
     _initial = {"kind": "repo", "id": job.id, "path": path}
 
 
-def _ai_errors(fn, own_key: bool = False):
+def _ai_errors(fn):
+    """Run an explanation, turning failures into a message the page can show."""
     try:
         return fn()
     except (KeyError, HTTPException):
         raise
     except NoAIKey as e:
         raise HTTPException(403, str(e))
-    except Exception as e:  # surface API errors to the page instead of a bare 500
-        status = getattr(e, "status_code", None)
-        if status == 401 and own_key:
-            msg = "AI explanation failed: Anthropic rejected your API key. Check it with the key button at the top."
-        elif status == 401:
-            msg = "AI explanation failed: the API key was rejected. Check ANTHROPIC_API_KEY and restart the-reader."
-        elif status == 429:
-            msg = "AI explanation failed: rate limited. Wait a moment and select it again."
-        else:
-            msg = f"AI explanation failed: {type(e).__name__}"
-            if not PUBLIC:
-                msg += f": {e}"
-        raise HTTPException(502, msg)
+    except llm.AIError as e:
+        raise HTTPException(e.status, str(e))
+    except Exception:  # the details go to the terminal, not to the page
+        traceback.print_exc()
+        raise HTTPException(502, "The AI explanation couldn't be written. Try again in a moment.")
 
 
-def _visitor_key(value: str | None) -> str | None:
-    """A visitor's own Anthropic key from the X-Anthropic-Key header, used for this request only."""
-    value = (value or "").strip()
-    return value if 20 <= len(value) <= 300 and value.isascii() and " " not in value else None
+_TOKEN = re.compile(r"[\x21-\x7e]{1,400}")  # printable ASCII, no spaces
+
+
+def _own_ai(request: Request) -> llm.AIConfig | None:
+    """The person's own AI settings, sent with each explanation request from the key button on the page.
+    They're used for that request only and never stored here."""
+    h = request.headers
+    key = (h.get("x-ai-key") or "").strip()
+    provider = (h.get("x-ai-provider") or "").strip().lower()
+    model = (h.get("x-ai-model") or "").strip() or None
+    base = (h.get("x-ai-base-url") or "").strip() or None
+    if model and not _TOKEN.fullmatch(model):
+        raise HTTPException(400, "That model name doesn't look right. Check it in the key settings.")
+    if provider == llm.CUSTOM:
+        # your own AI server works on your own computer only: a public server must not fetch addresses for visitors
+        if PUBLIC:
+            raise HTTPException(400, "This site can't use your own AI server. Pick one of the listed providers.")
+        if not base or not re.fullmatch(r"https?://[^\s]{1,300}", base):
+            raise HTTPException(400, "Type your AI server's address in the key settings, like http://localhost:11434/v1")
+        if key and not _TOKEN.fullmatch(key):
+            raise HTTPException(400, "That API key doesn't look right. Paste it again in the key settings.")
+        return llm.AIConfig(llm.CUSTOM, key, model, base)
+    if not key:
+        return None
+    if not _TOKEN.fullmatch(key):
+        raise HTTPException(400, "That API key doesn't look right. Paste it again in the key settings.")
+    provider = provider if provider in llm.PROVIDERS else llm.detect(key)
+    if provider is None:
+        raise HTTPException(400, "Pick which provider your API key is from in the key settings.")
+    return llm.AIConfig(provider, key, model)
 
 
 # ------------------------------------------------------------------ single files
@@ -140,8 +160,11 @@ class ExplainIn(BaseModel):
 
 @app.get("/api/health")
 def health():
-    # "ai": the server can pay for AI explanations without a visitor's own key
-    return {"version": __version__, "ai": ai_available(), "model": model_name(), "public": PUBLIC}
+    # "ai": the server pays for AI explanations itself; "providers": what the key settings offer
+    own = llm.server_config()
+    return {"version": __version__, "public": PUBLIC, "ai": ai_available(),
+            "ai_name": own.name if own and ai_available() else None,
+            "providers": llm.describe(), "custom_server": not PUBLIC}
 
 
 @app.get("/api/initial")
@@ -158,7 +181,7 @@ def example():
 @app.post("/api/analyze")
 def analyze_ep(body: AnalyzeIn):
     if len(body.source.encode()) > MAX_BYTES:
-        raise HTTPException(413, "File is larger than 2 MB")
+        raise HTTPException(413, "This file is too large to open here (the limit is 2 MB).")
     try:
         return run_analysis(body.filename, body.source)
     except UnsupportedLanguage as e:
@@ -166,14 +189,14 @@ def analyze_ep(body: AnalyzeIn):
 
 
 @app.post("/api/explain")
-def explain_ep(body: ExplainIn, x_anthropic_key: str | None = Header(default=None)):
+def explain_ep(body: ExplainIn, request: Request):
     a = _analyses.get(body.hash)
     if a is None:
-        raise HTTPException(404, "Analysis expired, re-open the file")
+        raise HTTPException(404, "This file isn't open here any more. Open it again.")
     if body.symbol != "<file>" and not any(s["id"] == body.symbol for s in a["symbols"]):
-        raise HTTPException(404, "Unknown symbol")
-    key = _visitor_key(x_anthropic_key)
-    return _ai_errors(lambda: explain(a, body.symbol, body.ai, api_key=key), own_key=bool(key))
+        raise HTTPException(404, "That function isn't in this file.")
+    own = _own_ai(request) if body.ai else None
+    return _ai_errors(lambda: explain(a, body.symbol, body.ai, own=own))
 
 
 # ------------------------------------------------------------------ repos
@@ -192,7 +215,7 @@ class RepoExplainIn(BaseModel):
 def _ready_index(rid: str):
     job = jobs.get_job(rid)
     if job is None:
-        raise HTTPException(404, "This project isn't open any more. Open the folder again.")
+        raise HTTPException(404, "This project isn't open any more. Open it again.")
     if job.state == "error":
         raise HTTPException(409, job.error or "This project couldn't be read.")
     if job.state != "ready" or job.index is None:
@@ -203,11 +226,11 @@ def _ready_index(rid: str):
 def _repo_file(rid: str, path: str) -> dict:
     idx = _ready_index(rid)
     if path not in idx.py:
-        raise HTTPException(404, f"{path} isn't a Python file in this project")
+        raise HTTPException(404, f"{path} isn't a Python file in this project.")
     try:
         mtime = (idx.root / path).stat().st_mtime
     except OSError:
-        raise HTTPException(404, f"{path} can't be read any more")
+        raise HTTPException(404, f"{path} can't be opened any more.")
     key = (rid, path)
     hit = _repo_files.get(key)
     if hit and hit[0] == mtime:
@@ -233,7 +256,7 @@ def repo_open(body: RepoOpenIn):
         return {**job.status(), "path": path}
     try:
         job = jobs.open_repo(text)
-    except (NotADirectoryError, FileNotFoundError, OSError) as e:
+    except (NotADirectoryError, FileNotFoundError, OSError):
         # "owner/repo" that isn't a folder here is probably a GitHub shorthand
         if re.fullmatch(r"[\w.-]+/[\w.-]+", text) and not Path(text).expanduser().exists():
             try:
@@ -241,7 +264,7 @@ def repo_open(body: RepoOpenIn):
                 return {**job.status(), "path": path}
             except github.LinkError:
                 pass
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, "That folder can't be opened. Check the path and try again.")
     return {**job.status(), "path": ""}
 
 
@@ -249,7 +272,7 @@ def repo_open(body: RepoOpenIn):
 def repo_status(id: str):
     job = jobs.get_job(id)
     if job is None:
-        raise HTTPException(404, "Unknown project")
+        raise HTTPException(404, "This project isn't open any more. Open it again.")
     return job.status()
 
 
@@ -264,21 +287,20 @@ def repo_file(id: str, path: str):
 
 
 @app.post("/api/repo/explain")
-def repo_explain(body: RepoExplainIn, x_anthropic_key: str | None = Header(default=None)):
+def repo_explain(body: RepoExplainIn, request: Request):
     idx = _ready_index(body.id)
-    key = _visitor_key(x_anthropic_key)
+    own = _own_ai(request) if body.ai else None
     if body.level == "repo":
-        return _ai_errors(lambda: summaries.explain_overview(idx, body.ai, key), own_key=bool(key))
+        return _ai_errors(lambda: summaries.explain_overview(idx, body.ai, own))
     if body.level == "dir":
         if body.path not in idx.dirs:
-            raise HTTPException(404, "Unknown folder")
-        return _ai_errors(lambda: summaries.explain_folder(idx, body.path, body.ai, key), own_key=bool(key))
+            raise HTTPException(404, "That folder isn't in this project.")
+        return _ai_errors(lambda: summaries.explain_folder(idx, body.path, body.ai, own))
     a = _repo_file(body.id, body.path)
     sid = body.symbol or "<file>"
     if sid != "<file>" and not any(s["id"] == sid for s in a["symbols"]):
-        raise HTTPException(404, "Unknown symbol")
-    return _ai_errors(lambda: explain(a, sid, body.ai, summaries.file_context(idx, a, sid), api_key=key),
-                      own_key=bool(key))
+        raise HTTPException(404, "That function isn't in this file.")
+    return _ai_errors(lambda: explain(a, sid, body.ai, summaries.file_context(idx, a, sid), own=own))
 
 
 # ------------------------------------------------------------------ the page

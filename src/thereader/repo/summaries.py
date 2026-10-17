@@ -9,6 +9,8 @@ from __future__ import annotations
 from collections import Counter
 
 from ..explainer import ai_markdown
+from ..llm import AIConfig
+from ..text import doc_summary
 from .index import RepoIndex
 
 TREE_LINES = 170
@@ -24,7 +26,7 @@ def _base(path: str) -> str:
 
 
 def _first_line(doc: str | None) -> str | None:
-    return doc.strip().splitlines()[0].strip() if doc and doc.strip() else None
+    return doc_summary(doc, 160)
 
 
 def _plural(n: int, word: str) -> str:
@@ -46,7 +48,8 @@ def _folder_blurb(idx: RepoIndex, path: str) -> str:
     if st["py_files"]:
         return f"{_plural(st['py_files'], 'Python file')}, {_plural(st['functions'], 'function')}"
     files = [f for f in idx.by_path if _under(f, path)]
-    return f"{_plural(st['files'], 'file')} ({_other_langs(idx, files)}), not analyzed yet"
+    langs = _other_langs(idx, files)
+    return f"{_plural(st['files'], 'file')}, no Python" + (f" ({langs})" if langs != "other" else "")
 
 
 def _file_blurb(idx: RepoIndex, f: str) -> str:
@@ -196,7 +199,7 @@ def _file_outline(idx: RepoIndex, f: str) -> str:
     return "\n".join(out)
 
 
-def ai_overview(idx: RepoIndex, api_key: str | None = None) -> dict:
+def ai_overview(idx: RepoIndex, own: AIConfig | None = None) -> dict:
     r = idx.readme
     eps = "\n".join(f"- {e['label']} -> {e['file']}" + (f" ({e['symbol']})" if e["symbol"] else "")
                     for e in idx.entry_points if e["file"]) or "none found"
@@ -216,10 +219,10 @@ def ai_overview(idx: RepoIndex, api_key: str | None = None) -> dict:
         "4. **Start reading here**: an ordered list of 3-6 files or functions, each with a few words on why.\n"
         "Write paths in backticks exactly as they appear in the structure above, relative to the project folder."
     )
-    return ai_markdown(prompt, ["overview", prompt], max_tokens=1100, api_key=api_key)
+    return ai_markdown(prompt, ["overview", prompt], max_tokens=1100, own=own)
 
 
-def ai_folder(idx: RepoIndex, folder: str, api_key: str | None = None) -> dict:
+def ai_folder(idx: RepoIndex, folder: str, own: AIConfig | None = None) -> dict:
     node = idx.dirs[folder]
     outline, used_chars = [], 0
     for f in node["files"]:
@@ -245,23 +248,23 @@ def ai_folder(idx: RepoIndex, folder: str, api_key: str | None = None) -> dict:
         "3. **How they connect**: 2-3 sentences, including how the rest of the project uses this folder.\n"
         "Write paths in backticks exactly as given."
     )
-    return ai_markdown(prompt, ["folder", prompt], max_tokens=900, api_key=api_key)
+    return ai_markdown(prompt, ["folder", prompt], max_tokens=900, own=own)
 
 
 # ---------------------------------------------------------------- dispatch
-def explain_overview(idx: RepoIndex, use_ai: bool, api_key: str | None = None) -> dict:
+def explain_overview(idx: RepoIndex, use_ai: bool, own: AIConfig | None = None) -> dict:
     if use_ai:
-        return ai_overview(idx, api_key)
+        return ai_overview(idx, own)
     return {"markdown": structural_overview(idx), "source": "structural", "cached": False}
 
 
-def explain_folder(idx: RepoIndex, folder: str, use_ai: bool, api_key: str | None = None) -> dict:
+def explain_folder(idx: RepoIndex, folder: str, use_ai: bool, own: AIConfig | None = None) -> dict:
     if folder not in idx.dirs:
         raise KeyError(folder)
     if not folder:
-        return explain_overview(idx, use_ai, api_key)
+        return explain_overview(idx, use_ai, own)
     if use_ai:
-        return ai_folder(idx, folder, api_key)
+        return ai_folder(idx, folder, own)
     return {"markdown": structural_folder(idx, folder), "source": "structural", "cached": False}
 
 

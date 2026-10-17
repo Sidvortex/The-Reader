@@ -1,4 +1,4 @@
-"""Explanations: an instant structural one that needs nothing, and an optional AI one (cached)."""
+"""Explanations: an instant one built from the code that needs nothing, and an optional AI one (cached)."""
 
 from __future__ import annotations
 
@@ -11,20 +11,19 @@ import sys
 import threading
 from pathlib import Path
 
-PROMPT_VERSION = "1"
-DEFAULT_MODEL = "claude-sonnet-5-5"
+from .llm import AIConfig, complete, server_config
+from .text import doc_summary
 
-
-def model_name() -> str:
-    return os.environ.get("THE_READER_MODEL", DEFAULT_MODEL)
+PROMPT_VERSION = "2"
 
 
 # ---------------------------------------------------------------- who pays for an AI explanation
-# On your own computer, your ANTHROPIC_API_KEY pays. On a public server (PUBLIC), visitors can send their own key
-# with a request; it's used for that request only and never stored. The server's own key, if it has one, pays for
-# at most THE_READER_AI_DAILY_LIMIT new explanations a day across all visitors (0 unless set). Explanations
-# already in the cache are free for everyone.
+# A person can add an API key from any provider on the page; it comes with each request, is used for that request
+# and isn't stored on the server. The server can also have its own key (see llm.server_config). On your own
+# computer that key has no limit; on a public server (PUBLIC) it pays for at most THE_READER_AI_DAILY_LIMIT new
+# explanations a day across all visitors (0 unless set). Explanations already in the cache are free for everyone.
 PUBLIC = False
+NO_KEY = "Add an API key with the Add key button at the top to get AI explanations."
 
 
 class NoAIKey(Exception):
@@ -37,7 +36,7 @@ _spent_lock = threading.Lock()
 
 def _shared_limit() -> int | None:
     """New explanations a day the server's key pays for. None means no limit."""
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    if server_config() is None:
         return 0
     raw = os.environ.get("THE_READER_AI_DAILY_LIMIT", "").strip()
     if not raw:
@@ -52,9 +51,9 @@ def _today() -> str:
     return datetime.date.today().isoformat()
 
 
-def ai_available(key: str | None = None) -> bool:
-    """Whether a new AI explanation can be paid for, by the visitor's key or the server's."""
-    if key:
+def ai_available(own: AIConfig | None = None) -> bool:
+    """Whether a new AI explanation can be paid for, by the person's own key or the server's."""
+    if own is not None:
         return True
     limit = _shared_limit()
     if limit is None:
@@ -64,23 +63,24 @@ def ai_available(key: str | None = None) -> bool:
     return used < limit
 
 
-def _key_for_new_explanation(key: str | None) -> str:
-    if key:
-        return key
+def _payer(own: AIConfig | None) -> AIConfig:
+    if own is not None:
+        return own
     limit = _shared_limit()
     if limit is not None:
         with _spent_lock:
             if _spent["day"] != _today():
                 _spent.update(day=_today(), count=0)
             if _spent["count"] >= limit:
-                if not PUBLIC:
-                    raise NoAIKey("Set ANTHROPIC_API_KEY before starting the-reader to turn on AI explanations.")
                 if limit == 0:
-                    raise NoAIKey("AI explanations here use your own Anthropic API key. Add it with the key button at the top.")
-                raise NoAIKey("Today's free AI explanations have run out. Add your own Anthropic API key with the "
-                              "key button at the top to keep going.")
+                    raise NoAIKey(NO_KEY)
+                raise NoAIKey("Today's free AI explanations have run out. Add your own API key with the Add key "
+                              "button at the top to keep going.")
             _spent["count"] += 1
-    return os.environ["ANTHROPIC_API_KEY"]
+    cfg = server_config()
+    if cfg is None:
+        raise NoAIKey(NO_KEY)
+    return cfg
 
 
 # ---------------------------------------------------------------- cache
@@ -160,15 +160,15 @@ def structural(a: dict, sid: str) -> str:
     elif s["kind"] == "class":
         bases = f" extending {', '.join(f'`{b}`' for b in s['bases'])}" if s["bases"] else ""
         parts.append(f"Class `{s['name']}`{bases}.")
-        if s.get("docstring"):
-            parts.append(s["docstring"].strip().split("\n\n")[0])
+        if doc := doc_summary(s.get("docstring")):
+            parts.append(doc)
         methods = [c for c in s["children"] if _sym(a, c)["kind"] == "method"]
         if methods:
             parts.append(f"**Methods:** {_names(a, methods)}")
         return "\n\n".join(parts)
     else:
-        if s.get("docstring"):
-            parts.append(s["docstring"].strip().split("\n\n")[0])
+        if doc := doc_summary(s.get("docstring")):
+            parts.append(doc)
         sig_bits = []
         params = [p for p in s["params"] if p.split(":")[0].split("=")[0].strip() not in ("self", "cls")]
         sig_bits.append(f"Takes {', '.join(f'`{p}`' for p in params)}." if params else "Takes no arguments.")
@@ -188,7 +188,7 @@ def structural(a: dict, sid: str) -> str:
                             "error handling" if "try" in kinds else None,
                             n("return point", "return"), n("raise point", "raise")) if x]
         if bits:
-            parts.append("**Shape:** " + ", ".join(bits) + f". Complexity {s['complexity']}.")
+            parts.append("**Shape:** " + ", ".join(bits) + f". {complexity_words(s['complexity'])}")
         else:
             parts.append("**Shape:** straight-line code with no branches.")
     if s["kind"] in ("function", "method") and not s["called_by"] and not s["name"].startswith("__"):
@@ -199,6 +199,12 @@ def structural(a: dict, sid: str) -> str:
         else:
             parts.append("_Nothing in this file calls it, so it's likely an entry point or public API._")
     return "\n\n".join(parts)
+
+
+def complexity_words(n: int) -> str:
+    """Cyclomatic complexity in words: roughly how many separate paths run through the code."""
+    feel = "easy to follow" if n <= 4 else "takes some following" if n <= 9 else "intricate"
+    return f"Complexity {n}: {feel}."
 
 
 def _count(n: int, word: str) -> str:
@@ -215,8 +221,8 @@ def _structural_file(a: dict) -> str:
     methods = [s for s in syms if s["kind"] == "method"]
     counts = [_count(len(classes), "class"), _count(len(funcs), "function"), _count(len(methods), "method")]
     parts = [f"`{f['name']}`: " + ", ".join([_count(f["lines"], "line")] + [c for c in counts if c]) + "."]
-    if f.get("docstring"):
-        parts.append(f["docstring"].strip().split("\n\n")[0])
+    if doc := doc_summary(f.get("docstring")):
+        parts.append(doc)
     stdlib = getattr(sys, "stdlib_module_names", set())
     tops = {i["module"].split(".")[0] for i in a["imports"] if not i["module"].startswith(".")}
     tops.discard("__future__")
@@ -275,27 +281,21 @@ def _prompt(a: dict, sid: str, context: str = "") -> str:
     )
 
 
-def ai_markdown(prompt: str, key_parts: list, max_tokens: int = 900, api_key: str | None = None) -> dict:
-    """Ask Claude, caching the answer under everything that shaped the prompt. `api_key` is a visitor's own key."""
-    key = hashlib.sha256(json.dumps([PROMPT_VERSION, model_name(), *key_parts]).encode()).hexdigest()
+def ai_markdown(prompt: str, key_parts: list, max_tokens: int = 900, own: AIConfig | None = None) -> dict:
+    """Ask an AI model, caching the answer under everything that shaped the prompt. `own` is the person's own key.
+    The cache is shared by every model: once anyone has an explanation of some code, it's free for everyone."""
+    key = hashlib.sha256(json.dumps([PROMPT_VERSION, *key_parts]).encode()).hexdigest()
     hit = cache().get(key)
     if hit:
         return {"markdown": hit, "source": "ai", "cached": True}
-    import anthropic
-
-    client = anthropic.Anthropic(api_key=_key_for_new_explanation(api_key))
-    msg = client.messages.create(
-        model=model_name(), max_tokens=max_tokens, system=SYSTEM,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    md = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text").strip()
+    md = complete(_payer(own), SYSTEM, prompt, max_tokens)
     cache().put(key, md)
     return {"markdown": md, "source": "ai", "cached": False}
 
 
-def explain(a: dict, sid: str, use_ai: bool, context: str = "", api_key: str | None = None) -> dict:
+def explain(a: dict, sid: str, use_ai: bool, context: str = "", own: AIConfig | None = None) -> dict:
     """Explain a function, class or (sid="<file>") the whole file. `context` adds repo-level facts."""
     if not use_ai:
         return {"markdown": structural(a, sid), "source": "structural", "cached": False}
     code = a["source"] if sid == "<file>" else _code(a, _sym(a, sid), numbered=False)
-    return ai_markdown(_prompt(a, sid, context), [sid, code, _outline(a), context], api_key=api_key)
+    return ai_markdown(_prompt(a, sid, context), [sid, code, _outline(a), context], own=own)
