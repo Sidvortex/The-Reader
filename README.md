@@ -11,6 +11,8 @@ Calls are links everywhere: in flowcharts, in the code, in the explanations. Fol
 
 Each layer has an instant explanation built from the code itself. Turn on AI explanations (with an API key from any AI service) for plain-English write-ups of the project, each folder, each file and each function. They're cached, so you only pay for code that changed.
 
+Click **Export** to save the whole explanation as one PDF or Word file, to read offline, print or share: the overview first, then each folder, each file and each function, with a contents page and bookmarks.
+
 You can still open a single file on its own: drop it in, paste it, or pass it on the command line.
 
 Python only for now.
@@ -81,6 +83,12 @@ the-reader ~/code/some-project
 
 Without a key everything except the AI write-ups works.
 
+### Save as a document
+
+**Export** at the top of a project makes a PDF or a Word (.docx) file of its explanation. Choose the whole project or just the folder you're in, and how deep to go: folders, files, or every class and function. Tests and examples are left out unless you untick that. AI explanations you've already opened are used; everything else is the explanation worked out from the code, so exporting never spends anything on AI.
+
+Big projects are cut off after 5,000 sections (1,500 on a public server) to keep the file readable; export one folder at a time to get the rest. For PDFs The Reader uses the DejaVu fonts when they're installed (`sudo pacman -S ttf-dejavu`), which cover most languages; without them it falls back to simpler built-in fonts.
+
 ### Keys
 
 | Key | Does |
@@ -123,6 +131,8 @@ docker run --rm -p 8765:8765 the-reader          # then open http://localhost:87
 | `THE_READER_MAX_BUSY` | `1` | projects read at the same time |
 | `THE_READER_WORKERS` | `1` | helper processes for reading big projects |
 | `THE_READER_KEEP_REPOS` | `6` | downloaded repositories kept on disk |
+| `THE_READER_EXPORT_MAX_SECTIONS` | `1500` | most sections in an exported document (5,000 on your own computer) |
+| `THE_READER_EXPORTS_AT_ONCE` | `1` | documents made at the same time |
 | `THE_READER_MAX_DOWNLOAD_MB` / `THE_READER_MAX_CHECKOUT_MB` | `250` / `500` | biggest repository it will download / unpack |
 
 On a server with more memory, raise `THE_READER_MAX_OPEN`, `THE_READER_MAX_BUSY` and `THE_READER_WORKERS`.
@@ -154,6 +164,11 @@ The-Reader/                      project root: run pip install here
 │       │   ├── cache.py         on-disk cache of analysed files
 │       │   ├── jobs.py          reads projects in the background, with progress
 │       │   └── worker.py        runs in helper processes for big projects
+│       ├── export/              PDF and Word export of a project's explanation
+│       │   ├── build.py         collects the sections in reading order
+│       │   ├── md.py            reads the explanations' markdown
+│       │   ├── pdf.py           writes the PDF (reportlab)
+│       │   └── word.py          writes the .docx (python-docx)
 │       ├── examples/            inventory.py and todo.py, to try it on
 │       └── frontend_build/      the compiled interface (generated, don't edit)
 └── frontend/                    interface source: React + TypeScript

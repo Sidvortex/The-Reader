@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "the-reader"
-version = "0.5.0"
+version = "0.6.0"
 description = "The Reader: read a codebase layer by layer, with maps, flowcharts and plain-English explanations."
 readme = "README.md"
 license = "PolyForm-Noncommercial-1.0.0"
@@ -17,6 +17,8 @@ dependencies = [
   "tree-sitter>=0.25",
   "tree-sitter-python>=0.25",
   "anthropic>=1.0",
+  "reportlab>=4.0",
+  "python-docx>=1.1",
 ]
 
 [project.urls]
