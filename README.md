@@ -193,7 +193,7 @@ project folder ◄────────────────────�
    React 19 + React Flow 12, laid out with ELK and a layered folder layout, code highlighted by Shiki
 ```
 
-Cross-file links handle plain imports, `from . import x`, relative and absolute imports, names re-exported through `__init__.py`, `from x import *`, methods inherited from classes in other files, and objects whose type is known from `x = Thing()`, `self.x = Thing()` or a `x: Thing` parameter.
+Cross-file links handle plain imports (also inside functions), `from . import x`, relative and absolute imports, names re-exported through `__init__.py`, `from x import *` and methods inherited from classes in other files. Calls on objects are linked when the object's class can be worked out: from `x = Thing()`, a `x: Thing` annotation, a function's return type (`def open_store() -> Store`), dataclass fields and other class attributes, `self.x = ...`, tuple assignments, loops over typed lists, and values kept in a dict literal. Properties count as calls when they're read. A call through a base class (`llm.stream()` where `llm: LLM`) also reaches the subclasses' versions of that method.
 
 ## Changing the interface
 
@@ -210,7 +210,7 @@ npm run build                  # compiles into src/thereader/frontend_build and 
 ## Limits
 
 - Python only. Other languages slot in as another analyzer returning the same data.
-- Links are worked out from the code, not by running it. A call on an object whose type can't be seen (an untyped parameter, a value returned from a function) is listed but not linked.
+- Links are worked out from the code, not by running it. A call on an object whose class can't be worked out (an untyped parameter, a function without a return type) is listed but not linked. When nothing could be linked to a function, its explanation says what is known instead (a decorator that registers it, a file that imports it, `.name` used on objects of unknown class, a library base class) and only calls it unused when none of those apply.
 - In flowcharts, an exception can jump from anywhere in a `try` block to its `except`; that's drawn as one arrow, not one per statement.
 - GitHub links work for public repositories only, and need `git` installed.
 
