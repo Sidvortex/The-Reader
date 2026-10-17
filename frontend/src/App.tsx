@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import ExportMenu from "./ExportMenu";
+import { useDismiss } from "./hooks";
 import { api, getAi, setAi as saveAi, type AiSettings } from "./api";
 import FileWorkspace from "./FileWorkspace";
 import OpenFolder, { loadRecents, saveRecent } from "./OpenFolder";
@@ -20,18 +22,6 @@ function initialTheme(): Theme {
 }
 
 /** Close a popover on Escape or a click outside it. */
-function useDismiss(open: boolean, ref: RefObject<HTMLDivElement | null>, close: () => void) {
-  useEffect(() => {
-    if (!open) return;
-    const onEvent = (e: MouseEvent | KeyboardEvent) => {
-      if (e instanceof KeyboardEvent ? e.key === "Escape" : !ref.current?.contains(e.target as Node)) close();
-    };
-    document.addEventListener("mousedown", onEvent);
-    document.addEventListener("keydown", onEvent);
-    return () => { document.removeEventListener("mousedown", onEvent); document.removeEventListener("keydown", onEvent); };
-  }, [open, ref, close]);
-}
-
 const masked = (k: string) => (k.length > 12 ? `${k.slice(0, 4)}…${k.slice(-4)}` : "••••");
 
 export default function App() {
@@ -278,6 +268,7 @@ export default function App() {
               </div>
             )}
           </div>
+          {screen.kind === "repo" && repoIndex && <ExportMenu key={repoIndex.id} index={repoIndex} />}
           <button className="ghost" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} aria-label="Toggle dark mode">
             {theme === "dark" ? "☀" : "☾"}
           </button>

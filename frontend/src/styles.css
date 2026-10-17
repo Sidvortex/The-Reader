@@ -397,3 +397,37 @@ button.trow:hover, .trow.dir:hover { background: var(--panel-2); color: var(--in
 .key-more label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--ink-2); }
 .key-more .optional { color: var(--muted); }
 .key-more input, .key-more select { font: inherit; font-size: 13px; padding: 6px 8px; border: 1px solid var(--rule); border-radius: 8px; background: var(--panel); color: var(--ink); }
+
+/* export */
+.export-popover { width: min(400px, calc(100vw - 32px)); }
+.export-popover h3 { margin: 0 0 6px; font-size: 15px; font-weight: 600; }
+.export-popover p { margin: 0 0 12px; font-size: 13.5px; line-height: 1.55; color: var(--ink-2); }
+.export-popover fieldset { border: 0; margin: 0; padding: 0; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.export-popover fieldset:disabled { opacity: 0.6; }
+.export-row { display: flex; flex-direction: column; gap: 5px; font-size: 13.5px; color: var(--ink); }
+.export-row label { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.export-row code { font: 12.5px/1.4 var(--mono); color: var(--ink-2); overflow-wrap: anywhere; }
+.export-label { font-size: 12.5px; color: var(--muted); }
+.export-row select { font: inherit; font-size: 13.5px; padding: 6px 8px; border: 1px solid var(--rule); border-radius: 8px; background: var(--panel); color: var(--ink); }
+.export-check { display: flex; align-items: center; gap: 6px; font-size: 13.5px; color: var(--ink); }
+.export-actions { display: flex; gap: 8px; margin-top: 2px; }
+.export-progress { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; font-size: 13px; color: var(--ink-2); }
+.export-progress .bar { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; }
+.export-progress .bar i { display: block; height: 100%; background: var(--hl); border-radius: 3px; transition: width 0.25s; }
+.export-progress .bar i.pulse { animation: export-pulse 1.2s ease-in-out infinite; }
+@keyframes export-pulse { 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .export-progress .bar i { transition: none; animation: none; } }
+.export-popover .export-done { margin: 12px 0 0; color: var(--ink); }
+.export-popover .export-done a { color: var(--teal); text-underline-offset: 3px; }
+.export-popover .export-error { margin: 12px 0 0; color: var(--brick); }
+.export-popover .hint { margin: 12px 0 0; font-size: 12.5px; color: var(--muted); }
+
+/* narrow windows: keep the top bar on one line */
+.top-actions > button, .top-actions .popover-anchor > button, .brand span { white-space: nowrap; }
+@media (max-width: 960px) {
+  .file-meta span { display: none; }
+  .ai-toggle { font-size: 0; gap: 0; }
+}
+@media (max-width: 640px) {
+  .brand span { display: none; }
+}

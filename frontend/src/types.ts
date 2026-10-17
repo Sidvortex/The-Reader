@@ -114,3 +114,9 @@ export type RepoStatus = {
 export type Initial = { kind: "file"; analysis: Analysis } | { kind: "repo"; id: string; path?: string } | null;
 
 export type RepoLevel = "repo" | "dir" | "file" | "symbol";
+
+export type ExportOptions = { scope: string; depth: "folders" | "files" | "functions"; format: "pdf" | "docx"; skip_tests: boolean };
+export type ExportStatus = {
+  id: string; state: "waiting" | "working" | "ready" | "error"; phase: string;
+  done: number; total: number; error: string | null; filename: string;
+};

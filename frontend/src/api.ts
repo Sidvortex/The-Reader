@@ -1,4 +1,4 @@
-import type { Analysis, Explanation, Health, Initial, RepoIndex, RepoLevel, RepoStatus } from "./types";
+import type { Analysis, ExportOptions, ExportStatus, Explanation, Health, Initial, RepoIndex, RepoLevel, RepoStatus } from "./types";
 
 // The person's own AI settings. Kept in this browser and sent only with explanation requests.
 export type AiSettings = { key: string; provider: string; model: string; baseUrl: string };
@@ -62,4 +62,9 @@ export const api = {
   repoFile: (id: string, path: string) => req<Analysis>(`/api/repo/file?${q({ id, path })}`),
   repoExplain: (id: string, level: RepoLevel, path: string, symbol: string | null, ai: boolean) =>
     req<Explanation>("/api/repo/explain", { id, level, path, symbol, ai }, ai),
+
+  /** making a PDF or Word file of the explanation runs in the background */
+  exportStart: (id: string, o: ExportOptions) => req<ExportStatus>("/api/repo/export", { id, ...o }),
+  exportStatus: (exportId: string) => req<ExportStatus>(`/api/repo/export/status?${q({ id: exportId })}`),
+  exportFileUrl: (exportId: string) => `/api/repo/export/file?${q({ id: exportId })}`,
 };
