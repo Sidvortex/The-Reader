@@ -23,7 +23,8 @@ export const FONTS = {
 
 /** Defined but never called from this file or (in repo mode) another one: maybe an entry point. */
 export function maybeEntry(s: Sym): boolean {
-  return s.kind !== "module" && s.called_by.length === 0 && !s.called_by_ext?.length && !s.name.startsWith("__");
+  return s.kind !== "module" && s.called_by.length === 0 && !s.called_by_ext?.length && !s.name.startsWith("__")
+    && !s.imported_by?.length && !s.name_used_in?.length && !s.referenced;
 }
 
 /** The second line of a call-map box, before its complexity bar. */

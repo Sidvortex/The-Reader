@@ -32,6 +32,9 @@ export type Sym = {
   children: string[];
   /** repo mode: callers that live in other files */
   called_by_ext?: { file: string; symbol: string }[];
+  imported_by?: string[]; // files that import it, when nothing calls it directly
+  name_used_in?: string[]; // files where `.name` appears on a value of unknown class
+  referenced?: boolean; // its name is passed on as a value somewhere in its file
 };
 
 export type FlowNodeKind =

@@ -192,13 +192,61 @@ def structural(a: dict, sid: str) -> str:
         else:
             parts.append("**Shape:** straight-line code with no branches.")
     if s["kind"] in ("function", "method") and not s["called_by"] and not s["name"].startswith("__"):
-        if s.get("called_by_ext"):
-            parts.append(f"_Only called from other files ({len(s['called_by_ext'])} place{'s' if len(s['called_by_ext']) != 1 else ''})._")
-        elif a.get("repo"):
-            parts.append("_Nothing in this project calls it directly, so it's likely an entry point, a callback or public API._")
-        else:
-            parts.append("_Nothing in this file calls it, so it's likely an entry point or public API._")
+        parts.append(_uncalled_note(a, s))
     return "\n\n".join(parts)
+
+
+# decorators that wrap or describe a function rather than hand it to a framework
+_WRAPPERS = {"property", "cached_property", "staticmethod", "classmethod", "abstractmethod", "wraps", "overload",
+             "override", "setter", "getter", "deleter", "lru_cache", "cache", "final", "contextmanager",
+             "asynccontextmanager", "total_ordering", "deprecated", "dataclass"}
+
+
+def _files(paths: list[str], limit: int = 3) -> str:
+    shown = ", ".join(f"`{p}`" for p in paths[:limit])
+    return shown + (f" and {len(paths) - limit} more" if len(paths) > limit else "")
+
+
+def _is_test(a: dict, s: dict) -> bool:
+    path = a["file"].get("path") or a["file"]["name"]
+    name = path.rsplit("/", 1)[-1]
+    in_tests = name.startswith("test_") or name.endswith("_test.py") or "/tests/" in f"/{path}"
+    cls = s["qualname"].rsplit(".", 1)[0] if s["kind"] == "method" else ""
+    return in_tests and s["name"].startswith("test") and (not cls or cls.startswith("Test") or "Test" in cls)
+
+
+def _uncalled_note(a: dict, s: dict) -> str:
+    """Why nothing in this file calls a function, saying only what's known: a confident "nothing calls it"
+    only when no call, import, registration or use by name could be found."""
+    ext = s.get("called_by_ext") or []
+    if ext:
+        n = len(ext)
+        return f"_Only called from other files ({n} place{'s' if n != 1 else ''})._"
+    registered = [d for d in s.get("decorators", []) if d.split("(")[0].rsplit(".", 1)[-1] not in _WRAPPERS]
+    if registered:
+        return (f"_Nothing calls it directly: `@{registered[0]}` registers it, and the framework calls it when it's "
+                "needed._")
+    if _is_test(a, s):
+        return "_A test: the test runner (pytest or unittest) finds it by its name and runs it._"
+    if s.get("imported_by"):
+        users = s["imported_by"]
+        return f"_Not called in this file; {_files(users)} import{'s' if len(users) == 1 else ''} it._"
+    if s.get("referenced"):
+        return "_Not called directly; its name is passed on as a value (for example as a callback), so it runs later._"
+    if s.get("name_used_in"):
+        return (f"_No call to it could be traced for certain, but `.{s['name']}` appears in {_files(s['name_used_in'])}, "
+                "on objects whose class isn't written down there, so it's probably called from there._")
+    if s.get("outside_bases"):
+        base = s["outside_bases"][0]
+        return (f"_Nothing in this project calls it, but its class builds on `{base}` from outside the project, "
+                "whose own code may call it._")
+    is_property = any(d.split("(")[0].rsplit(".", 1)[-1] in ("property", "cached_property")
+                      for d in s.get("decorators", []))
+    if is_property:
+        return "_A property: it runs when the attribute is read, and no place that reads it could be found._"
+    if a.get("repo"):
+        return "_Nothing in this project calls it, imports it or uses its name, so it's likely an entry point or unused._"
+    return "_Nothing in this file calls it, so it's likely an entry point or used from elsewhere._"
 
 
 def complexity_words(n: int) -> str:
