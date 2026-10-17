@@ -9,7 +9,7 @@ Read code the way you'd explain it to someone. Point The Reader at a project fol
 
 Calls are links everywhere: in flowcharts, in the code, in the explanations. Following one into another file keeps your place, and the browser's Back button takes you back. Every view has its own address, so reloading or bookmarking brings you back to the same spot.
 
-Each layer has an instant explanation built from the code itself. Turn on AI explanations (Claude) for plain-English write-ups of the project, each folder, each file and each function. They're cached, so you only pay for code that changed.
+Each layer has an instant explanation built from the code itself. Turn on AI explanations (with an API key from any AI service) for plain-English write-ups of the project, each folder, each file and each function. They're cached, so you only pay for code that changed.
 
 You can still open a single file on its own: drop it in, paste it, or pass it on the command line.
 
@@ -70,9 +70,12 @@ The first time you open a big project it's indexed (Django, about 3,000 Python f
 
 ### AI explanations (optional)
 
+Click **Add key** at the top of the page and paste an API key. Keys from OpenAI, Google Gemini, Anthropic, Groq, Mistral, DeepSeek, xAI and OpenRouter work, and The Reader works out which service a key is from. The key stays in your browser. Under **Options** you can pick the service yourself, choose a model, or point to your own AI server (anything that speaks the OpenAI chat format, such as Ollama; local use only).
+
+Or set a key for the whole server before starting it:
+
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-export THE_READER_MODEL=claude-sonnet-5-5   # default; claude-haiku-5-5 is faster and cheaper
+export THE_READER_AI_KEY=your-key
 the-reader ~/code/some-project
 ```
 
@@ -96,8 +99,8 @@ Scroll moves the diagrams like a page; pinch or Ctrl/Cmd + scroll zooms.
 The Reader can run as a website where anyone pastes a GitHub link or drops in a file. Start it in **public mode**: `the-reader --public`, or set `THE_READER_PUBLIC=1`. In public mode:
 
 - visitors can open GitHub links and single files, but never folders on the server;
-- AI explanations use each visitor's own Anthropic API key (the **Add key** button). The key stays in their browser and goes to the server only with explanation requests, which use it once and don't keep it;
-- the server's own `ANTHROPIC_API_KEY`, if you set one, pays for at most `THE_READER_AI_DAILY_LIMIT` new explanations a day across all visitors (0 unless you set it). Explanations already made are cached and cost nothing;
+- AI explanations use each visitor's own API key (the **Add key** button). The key stays in their browser and goes to the server only with explanation requests, which use it once and don't keep it;
+- the server's own key (`THE_READER_AI_KEY`), if you set one, pays for at most `THE_READER_AI_DAILY_LIMIT` new explanations a day across all visitors (0 unless you set it). Explanations already made are cached and cost nothing;
 - limits suit a small server: one project read at a time, up to 2,500 Python files each, two projects kept in memory.
 
 The `Dockerfile` builds that website (Python 3.13, git, public mode, port from `$PORT`), so hosts that build from a Dockerfile, such as Render or Railway, can run it straight from this repository:
@@ -110,9 +113,11 @@ docker run --rm -p 8765:8765 the-reader          # then open http://localhost:87
 | Variable | Public default | What it does |
 | --- | --- | --- |
 | `THE_READER_PUBLIC` | `1` in the Dockerfile | public mode |
-| `ANTHROPIC_API_KEY` | not set | the server's own key |
+| `THE_READER_AI_KEY` | not set | the server's own key, from any supported service (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and the like are also read) |
+| `THE_READER_AI_PROVIDER` | detected | `openai`, `google`, `anthropic`, `groq`, `mistral`, `deepseek`, `xai`, `openrouter` or `custom` |
 | `THE_READER_AI_DAILY_LIMIT` | `0` | new AI explanations a day that the server's key pays for |
-| `THE_READER_MODEL` | `claude-sonnet-5-5` | the model for AI explanations |
+| `THE_READER_MODEL` | the service's default | the model for AI explanations |
+| `THE_READER_AI_BASE_URL` | not set | address of your own AI server (provider `custom`) |
 | `THE_READER_MAX_PY_FILES` | `2500` | Python files read per project |
 | `THE_READER_MAX_OPEN` | `2` | projects kept in memory (a Django-sized one needs about 250 MB) |
 | `THE_READER_MAX_BUSY` | `1` | projects read at the same time |
