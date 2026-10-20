@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "the-reader"
-version = "0.6.1"
-description = "The Reader: read a codebase layer by layer, with maps, flowcharts and plain-English explanations."
+version = "0.7.0"
+description = "The Reader: read a codebase layer by layer, with maps, flowcharts and plain-English explanations. Python, JavaScript, TypeScript, Vue, Svelte, HTML and CSS."
 readme = "README.md"
 license = "PolyForm-Noncommercial-1.0.0"
 license-files = ["LICENSE.md", "THIRD_PARTY_NOTICES.md"]
@@ -16,6 +16,9 @@ dependencies = [
   "uvicorn>=0.35",
   "tree-sitter>=0.25",
   "tree-sitter-python>=0.25",
+  "tree-sitter-javascript>=0.25",
+  "tree-sitter-typescript>=0.23",
+  "tree-sitter-css>=0.25",
   "anthropic>=1.0",
   "reportlab>=4.0",
   "python-docx>=1.1",

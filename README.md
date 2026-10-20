@@ -2,10 +2,10 @@
 
 Read code the way you'd explain it to someone. Point The Reader at a project folder or a GitHub link and read it in layers, from what the project is for down to how one function works:
 
-1. **Overview**: what the project does (from its README), what it's written in, where it starts (commands, `python -m`, scripts), what it depends on, and which files everything else leans on.
+1. **Overview**: what the project does (from its README), what it's written in, where it starts (`npm run dev`, commands, `python -m`, scripts), what it depends on, and which files everything else leans on.
 2. **Folder map**: the folders and files inside a folder, arranged top to bottom by who uses whom. Point at a box to see everything it connects to.
 3. **File**: a call map of the file's functions, with the functions it calls in other files shown as dashed boxes you can click into.
-4. **Function**: a flowchart built from the real code (branches, loops, `match`, `try/except`, early returns), next to the code and an explanation.
+4. **Function**: a flowchart built from the real code (branches, loops, `match` and `switch`, `try`, early returns), next to the code and an explanation.
 
 Calls are links everywhere: in flowcharts, in the code, in the explanations. Following one into another file keeps your place, and the browser's Back button takes you back. Every view has its own address, so reloading or bookmarking brings you back to the same spot.
 
@@ -15,7 +15,17 @@ Click **Export** to save the whole explanation as one PDF or Word file, to read 
 
 You can still open a single file on its own: drop it in, paste it, or pass it on the command line.
 
-Python only for now.
+### Languages
+
+| Language | What The Reader reads |
+| --- | --- |
+| Python | everything: outline, call maps, flowcharts, imports and calls between files, entry points |
+| JavaScript, TypeScript (`.js` `.mjs` `.cjs` `.jsx` `.ts` `.mts` `.cts` `.tsx`) | the same, plus React components (JSX tags count as calls), hooks, `new`, getters, CommonJS `require` and `module.exports` |
+| Vue and Svelte components | their `<script>` parts like any script, plus the components their template shows and the functions its handlers call |
+| HTML | the scripts and stylesheets a page loads, its inline scripts and `onclick`-style handlers, and an outline of its headings and sections |
+| CSS | an outline of its rules (inside `@media` and the like too), `@import`s and custom properties |
+
+Imports between JavaScript files are followed through relative paths, `index` files, `.js` written for a `.ts` file, tsconfig/jsconfig `paths`, the usual `@/` alias for `src/`, packages inside the repository (workspaces) and re-exports. Minified bundles and `.d.ts` declaration files are listed but not read.
 
 ## Names
 
@@ -68,7 +78,7 @@ Paste any of these:
 
 The Reader downloads just that commit (no history) into `~/.cache/the-reader/github/`, keeps the most recently used few, and reuses them. Only public repositories work from a link; for a private one, clone it and open the folder. Each project's address names the exact commit (`#/r/gh~owner~repo~<commit>/…`), so a copied address opens the same code for someone else, even after The Reader restarts.
 
-The first time you open a big project it's indexed (Django, about 3,000 Python files, takes a few seconds on a modern laptop). The result is cached in `~/.cache/the-reader/`, so opening it again is quick. After you change the code, use **Read the folder again** on the overview.
+The first time you open a big project it's indexed (Django, about 3,000 Python files plus its HTML, CSS and JavaScript, takes under a minute on a modern laptop). The result is cached in `~/.cache/the-reader/`, so opening it again is quick. After you change the code, use **Read the folder again** on the overview.
 
 ### AI explanations (optional)
 
@@ -109,7 +119,7 @@ The Reader can run as a website where anyone pastes a GitHub link or drops in a 
 - visitors can open GitHub links and single files, but never folders on the server;
 - AI explanations use each visitor's own API key (the **Add key** button). The key stays in their browser and goes to the server only with explanation requests, which use it once and don't keep it;
 - the server's own key (`THE_READER_AI_KEY`), if you set one, pays for at most `THE_READER_AI_DAILY_LIMIT` new explanations a day across all visitors (0 unless you set it). Explanations already made are cached and cost nothing;
-- limits suit a small server: one project read at a time, up to 2,500 Python files each, two projects kept in memory.
+- limits suit a small server: one project read at a time, up to 2,500 files of code each, two projects kept in memory.
 
 The `Dockerfile` builds that website (Python 3.13, git, public mode, port from `$PORT`), so hosts that build from a Dockerfile, such as Render or Railway, can run it straight from this repository:
 
@@ -126,7 +136,7 @@ docker run --rm -p 8765:8765 the-reader          # then open http://localhost:87
 | `THE_READER_AI_DAILY_LIMIT` | `0` | new AI explanations a day that the server's key pays for |
 | `THE_READER_MODEL` | the service's default | the model for AI explanations |
 | `THE_READER_AI_BASE_URL` | not set | address of your own AI server (provider `custom`) |
-| `THE_READER_MAX_PY_FILES` | `2500` | Python files read per project |
+| `THE_READER_MAX_FILES` | `2500` | files of code read per project (8,000 on your own computer; `THE_READER_MAX_PY_FILES` still works) |
 | `THE_READER_MAX_OPEN` | `2` | projects kept in memory (a Django-sized one needs about 250 MB) |
 | `THE_READER_MAX_BUSY` | `1` | projects read at the same time |
 | `THE_READER_WORKERS` | `1` | helper processes for reading big projects |
@@ -153,12 +163,15 @@ The-Reader/                      project root: run pip install here
 │       ├── server.py            local web server and API
 │       ├── explainer.py         function and file explanations, structural and AI
 │       ├── analyzer/
-│       │   ├── python_analyzer.py   outline, imports, calls, entry points
+│       │   ├── python_analyzer.py   Python: outline, imports, calls, where values come from
+│       │   ├── js_analyzer.py       JavaScript and TypeScript, the same way
+│       │   ├── markup.py            Vue and Svelte components, HTML pages, CSS stylesheets
 │       │   └── flowchart.py         turns a function body into a flowchart
 │       ├── repo/                repo mode
 │       │   ├── files.py         which files belong to the project, and their languages
 │       │   ├── github.py        GitHub links: which commit, a shallow download, size limits
 │       │   ├── modules.py       module names; resolves imports and calls between files
+│       │   ├── jsmodules.py     which file a JavaScript import means; TypeScript types
 │       │   ├── index.py         builds the project index: tree, links, entry points, README
 │       │   ├── summaries.py     overview and folder explanations, structural and AI
 │       │   ├── cache.py         on-disk cache of analysed files
@@ -183,7 +196,8 @@ GitHub link ─► resolve the branch, tag or commit ─► download that one co
                                                                   │
 project folder ◄──────────────────────────────────────────────────┘
                ─► list files (git ls-files, or a walk that skips venvs, node_modules, caches)
-               ─► analyse every Python file with tree-sitter (in parallel, cached by content)
+               ─► analyse every Python, JavaScript, TypeScript, Vue, Svelte, HTML and CSS file
+                  with tree-sitter (in parallel, cached by content)
                ─► module names (packages, src/ layout, folders without __init__.py)
                ─► resolve imports and calls between files ─► project index
                                                                   │
@@ -209,7 +223,7 @@ npm run build                  # compiles into src/thereader/frontend_build and 
 
 ## Limits
 
-- Python only. Other languages slot in as another analyzer returning the same data.
+- Python, JavaScript, TypeScript, Vue, Svelte, HTML and CSS. Other languages slot in as another analyzer returning the same data. SCSS and Less files are listed but not read.
 - Links are worked out from the code, not by running it. A call on an object whose class can't be worked out (an untyped parameter, a function without a return type) is listed but not linked. When nothing could be linked to a function, its explanation says what is known instead (a decorator that registers it, a file that imports it, `.name` used on objects of unknown class, a library base class) and only calls it unused when none of those apply.
 - In flowcharts, an exception can jump from anywhere in a `try` block to its `except`; that's drawn as one arrow, not one per statement.
 - GitHub links work for public repositories only, and need `git` installed.
