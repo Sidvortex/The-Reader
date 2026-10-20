@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import configparser
 import copy
+import posixpath
 import hashlib
 import json
 import multiprocessing
@@ -16,17 +17,28 @@ from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
-from ..analyzer import ANALYZER_VERSION, analyze
+from ..analyzer import ANALYZER_VERSION, analyze, can_read
 from ..text import doc_summary
 from .cache import AnalysisCache
 from .files import NOT_CODE, FileEntry, list_files, read_text
+from .jsmodules import loads_jsonc
 from .modules import ModuleMap
 from .worker import analyze_for_index
 
-MAX_PY_FILES = int(os.environ.get("THE_READER_MAX_PY_FILES", "8000"))
+# files read per project (Python, JavaScript, TypeScript, Vue, Svelte, HTML, CSS)
+MAX_PY_FILES = int(os.environ.get("THE_READER_MAX_FILES") or os.environ.get("THE_READER_MAX_PY_FILES") or "8000")
 WORKERS = int(os.environ.get("THE_READER_WORKERS", "0"))  # helper processes; 0 picks from the CPU count
 PARALLEL_FROM = 150  # uncached files before helper processes are worth starting
-SPECIAL_FILES = {"pyproject.toml", "setup.cfg", "setup.py", "package.json"}
+SPECIAL_FILES = {"pyproject.toml", "setup.cfg", "setup.py", "package.json", "tsconfig.json", "jsconfig.json"}
+# what each language is called in sentences
+LANGUAGE_NAMES = {"python": "Python", "javascript": "JavaScript", "typescript": "TypeScript", "vue": "Vue",
+                  "svelte": "Svelte", "html": "HTML", "css": "CSS"}
+
+
+def _minified(data: bytes) -> bool:
+    """A bundle or minified file: a few enormous lines. Reading those explains nothing."""
+    lines = data.count(b"\n") + 1
+    return len(data) > 20_000 and len(data) / lines > 300
 
 
 class Progress:
@@ -48,7 +60,8 @@ def _can_spawn() -> bool:
     return bool(f) and os.path.isfile(f)
 
 
-TESTY = re.compile(r"(^|/)(tests?|testing|examples?|docs?|benchmarks?)(/|$)|(^|/)test_")
+TESTY = re.compile(r"(^|/)(tests?|testing|examples?|docs?|benchmarks?|__tests__|__mocks__|e2e|cypress|"
+                   r"stories|storybook|fixtures)(/|$)|(^|/)test_|\.(test|spec|stories|e2e)\.[cm]?[jt]sx?$")
 
 
 def repo_id(root: Path) -> str:
@@ -83,24 +96,33 @@ class RepoIndex:
 
         self.progress.set("Reading files", len(self.entries))
         texts: dict[str, bytes] = {}
+        self.minified: set[str] = set()
         for e in self.entries:
             name = e.path.rsplit("/", 1)[-1]
-            if e.language or name in SPECIAL_FILES or name.lower().startswith("readme"):
+            special = name in SPECIAL_FILES or re.fullmatch(r"tsconfig\.[\w.-]+\.json", name)
+            if e.language or special or name.lower().startswith("readme"):
                 data = read_text(self.root, e)
-                if data is not None and (e.language == "Python" or name in SPECIAL_FILES
-                                         or name.lower().startswith("readme")):
-                    texts[e.path] = data
+                if data is not None and (can_read(e.path) or special or name.lower().startswith("readme")):
+                    if can_read(e.path) and _minified(data):
+                        self.minified.add(e.path)
+                    else:
+                        texts[e.path] = data
             self.progress.done += 1
 
-        py_paths = [e.path for e in self.entries if e.language == "Python" and e.path in texts]
-        if len(py_paths) > MAX_PY_FILES:
-            self.notes.append(f"This project has {len(py_paths):,} Python files; the first {MAX_PY_FILES:,} were analyzed.")
-            py_paths = py_paths[:MAX_PY_FILES]
-        self.py: dict[str, dict] = self._analyze_all(py_paths, texts)
-        self.failed = [p for p in py_paths if p not in self.py]
+        code_paths = [e.path for e in self.entries if e.path in texts and can_read(e.path)]
+        if len(code_paths) > MAX_PY_FILES:
+            # the project's own code before tests and examples
+            code_paths.sort(key=lambda p: bool(TESTY.search(p)))
+            self.notes.append(f"This project has {len(code_paths):,} files of code; the first {MAX_PY_FILES:,} were "
+                              "read, tests and examples last.")
+            code_paths = sorted(code_paths[:MAX_PY_FILES])
+        self.code: dict[str, dict] = self._analyze_all(code_paths, texts)
+        self.py = self.code  # the name older parts of The Reader use
+        self.failed = [p for p in code_paths if p not in self.code]
 
         self.progress.set("Linking files")
-        self.modmap = ModuleMap(list(self.py), self.name, self.py)
+        configs = {p: t for p, t in texts.items() if p.rsplit("/", 1)[-1].endswith(".json")}
+        self.modmap = ModuleMap(list(self.code), self.name, self.code, configs, {e.path for e in self.entries})
         self.own_packages = sorted({n.split(".")[0] for n in self.modmap.canonical.values() if n})
         self._link()
         self._build_tree()
@@ -124,7 +146,7 @@ class RepoIndex:
                 used.add(keys[p])
             else:
                 todo.append((p, texts[p].decode("utf-8", "replace")))
-        self.progress.set("Analyzing Python files", len(paths))
+        self.progress.set("Analyzing the code", len(paths))
         self.progress.done = len(out)
         fresh: dict[str, dict] = {}
 
@@ -181,6 +203,14 @@ class RepoIndex:
                     c["xalso"] = [list(o) for o in more]
                     out += [(s, o, True) for o in more]
             for u in s.pop("uses", []):  # reading a property defined in another file
+                if "ref" in u:  # a function from another file handed on by name: onClick={save}
+                    hit = mm.name_in(f, u["ref"])
+                    sym = mm.symbols.get(hit[0], {}).get(hit[1]) if hit and hit[1] else None
+                    if sym and hit[0] != f and sym["kind"] in ("function", "method"):
+                        s["calls"].append({"name": u["name"], "kind": "external", "access": True, "xfile": hit[0],
+                                           "xsymbol": hit[1], "line": u["line"], "col": u["col"], "len": u["len"]})
+                        out.append((s, hit, False))
+                    continue
                 state, hits, _ = mm.resolve_member(u["recv"], u["attr"], f)
                 for hit in hits:
                     sym = mm.symbols.get(hit[0], {}).get(hit[1])
@@ -223,6 +253,7 @@ class RepoIndex:
         kinds = [s["kind"] for s in a["symbols"]] if a else []
         return {
             "files": 1, "code_files": int(code), "py_files": int(e.language == "Python"),
+            "read_files": int(path in self.code),
             "lines": e.lines if code else 0,
             "functions": kinds.count("function") + kinds.count("method"), "classes": kinds.count("class"),
         }
@@ -249,7 +280,8 @@ class RepoIndex:
             node = {"path": path, "name": name, "parent": parent, "dirs": [], "files": sorted(raw[path]["files"]),
                     "doc": None}
             self.dirs[path] = node
-            totals = {"files": 0, "code_files": 0, "py_files": 0, "lines": 0, "functions": 0, "classes": 0}
+            totals = {"files": 0, "code_files": 0, "py_files": 0, "read_files": 0, "lines": 0, "functions": 0,
+                      "classes": 0}
             for f in node["files"]:
                 for k, v in self._file_stats(f).items():
                     totals[k] += v
@@ -259,9 +291,11 @@ class RepoIndex:
                 sub = build(c, path, c[len(path) + 1:] if path else c)
                 for k in totals:
                     totals[k] += sub["stats"][k]
-            init = f"{path}/__init__.py" if path else "__init__.py"
-            if init in self.py:
-                node["doc"] = _first_para(self.py[init]["file"].get("docstring"))
+            for init in ("__init__.py", "index.ts", "index.tsx", "index.js", "index.jsx", "index.mjs", "mod.ts"):
+                init = f"{path}/{init}" if path else init
+                if init in self.code and self.code[init]["file"].get("docstring"):
+                    node["doc"] = _first_para(self.code[init]["file"].get("docstring"))
+                    break
             node["stats"] = totals
             return node
 
@@ -362,7 +396,8 @@ class RepoIndex:
                 pkg = self.modmap.canonical.get(f, "").rsplit(".", 1)[0]
                 eps.append({"kind": "module", "label": f"python -m {pkg}" if pkg else f"python {f}", "file": f,
                             "symbol": "<module>", "detail": None})
-        guards = [f for f, a in self.py.items() if a["file"].get("main_guard") and not f.endswith("__main__.py")]
+        guards = [f for f, a in self.code.items() if a["file"].get("main_guard") and not f.endswith("__main__.py")
+                  and a["file"].get("language", "python") == "python"]
         guards.sort(key=lambda f: (bool(TESTY.search(f)), f.count("/"), f))
         for f in guards[:8]:
             mod = self.modmap.canonical.get(f, "")
@@ -371,7 +406,80 @@ class RepoIndex:
                             "detail": None})
             else:
                 eps.append({"kind": "script", "label": f"python {f}", "file": f, "symbol": "<module>", "detail": None})
-        return eps
+        return eps + self._js_entry_points(texts, {e["file"] for e in eps})
+
+    # what starts a JavaScript project: package.json bin and scripts, its main file, an index.html
+    _RUNNERS = {  # dev servers that start from a known file rather than one named in the command
+        "vite": ["index.html"], "next": ["app/page.tsx", "app/page.jsx", "app/page.js", "src/app/page.tsx",
+                                         "pages/index.tsx", "pages/index.jsx", "pages/index.js", "src/pages/index.tsx"],
+        "react-scripts": ["src/index.tsx", "src/index.jsx", "src/index.js"], "vue-cli-service": [
+            "src/main.ts", "src/main.js"], "nuxt": ["app.vue", "pages/index.vue"], "nuxi": ["app.vue", "pages/index.vue"],
+        "astro": ["src/pages/index.astro"], "svelte-kit": ["src/routes/+page.svelte"],
+        "ng": ["src/main.ts"], "webpack": ["src/index.ts", "src/index.js"],
+    }
+
+    def _js_entry_points(self, texts: dict[str, bytes], taken: set) -> list[dict]:
+        eps: list[dict] = []
+        js = self.modmap.js
+
+        def add(kind: str, label: str, f: str | None, detail: str | None = None) -> None:
+            if f and f in self.code and f not in taken:
+                taken.add(f)
+                start = f
+                if f.endswith((".html", ".htm")):  # a page starts with the scripts it loads as modules
+                    for imp in self.code[f]["imports"]:
+                        if imp.get("html") == "script":
+                            hit = js.resolve_spec(f, imp["module"])
+                            if hit:
+                                start, detail = hit, f"through {f}"
+                                break
+                eps.append({"kind": kind, "label": label, "file": start, "symbol": "<module>", "detail": detail})
+
+        pkgs = sorted((p for p in texts if p.rsplit("/", 1)[-1] == "package.json" and not TESTY.search(p)),
+                      key=lambda p: (p.count("/"), p))
+        for p in pkgs[:12]:
+            folder = p.rsplit("/", 1)[0] if "/" in p else ""
+            data = loads_jsonc(texts[p].decode("utf-8", "replace"))
+            name = data.get("name") if isinstance(data.get("name"), str) else None
+            bins = data.get("bin")
+            if isinstance(bins, str):
+                bins = {name or "bin": bins}
+            for cmd, target in (bins or {}).items() if isinstance(bins, dict) else []:
+                if isinstance(target, str):
+                    add("command", cmd, js._try(posixpath.join(folder, target)), target)
+            scripts = data.get("scripts") if isinstance(data.get("scripts"), dict) else {}
+            for key in ("dev", "start", "serve", "main"):
+                cmd = scripts.get(key)
+                if not isinstance(cmd, str):
+                    continue
+                label = "npm start" if key == "start" else f"npm run {key}"
+                files = re.findall(r"(?:^|\s)(\.?\.?/?[\w@./-]+\.(?:[cm]?[jt]sx?))(?=\s|$)", cmd)
+                hit = next((h for h in (js._try(posixpath.join(folder, x)) for x in files) if h), None)
+                if hit:
+                    add("command", label, hit, cmd)
+                    continue
+                words = re.findall(r"[\w@.-]+", cmd)
+                for runner, cands in self._RUNNERS.items():
+                    if runner in words:
+                        for c in cands:
+                            add("command", label, js._try(posixpath.join(folder, c)) or (
+                                posixpath.join(folder, c) if posixpath.join(folder, c) in self.code else None), cmd)
+                        break
+            if name and not bins:  # a library: reading starts where `import "name"` lands
+                entry = js._package_entry(folder, data, "")
+                if entry and not entry.endswith(".json"):
+                    add("module", f'import "{name}"', entry)
+        if not eps:  # no package.json to go by: the usual names
+            for c in ("index.html", "src/main.ts", "src/main.tsx", "src/main.js", "src/main.jsx", "src/index.ts",
+                      "src/index.tsx", "src/index.js", "src/index.jsx", "index.js", "index.ts", "main.js", "main.ts",
+                      "server.js", "server.ts", "app.js", "app.ts"):
+                if c in self.code:
+                    add("script", c if c.endswith(".html") else f"node {c}" if c.endswith(".js") else c, c)
+                    break
+        for f, a in sorted(self.code.items()):  # if (require.main === module)
+            if a["file"].get("main_guard") and a["file"].get("language") == "javascript" and not TESTY.search(f):
+                add("script", f"node {f}", f)
+        return eps[:10]
 
     def _dependencies(self, texts: dict[str, bytes]) -> list[dict]:
         out: list[dict] = []
@@ -429,6 +537,13 @@ class RepoIndex:
                 by[e.language][1] += e.lines
         return [{"name": k, "files": v[0], "lines": v[1]} for k, v in sorted(by.items(), key=lambda kv: -kv[1][1])]
 
+    def read_languages(self) -> list[dict]:
+        """The languages of the files The Reader read, most first: [{"name": "TypeScript", "files": 120}]."""
+        by: dict[str, int] = defaultdict(int)
+        for a in self.code.values():
+            by[LANGUAGE_NAMES.get(a["file"].get("language", "python"), "Python")] += 1
+        return [{"name": k, "files": v} for k, v in sorted(by.items(), key=lambda kv: -kv[1])]
+
     def to_json(self) -> dict:
         files: dict[str, dict] = {}
         for e in self.entries:
@@ -441,14 +556,18 @@ class RepoIndex:
                 info["main"] = bool(a["file"].get("main_guard"))
                 info["symbols"] = [[s["id"], s["kind"], s["name"], s["start_line"], s["parent"]]
                                    for s in a["symbols"] if s["kind"] != "module"]
-            elif e.language == "Python":
-                info["skipped"] = "too many files" if e.path not in self.failed else "could not be read"
+            elif can_read(e.path) or e.language == "Python":
+                info["skipped"] = ("minified" if e.path in self.minified else "could not be read"
+                                   if e.path in self.failed else "too many files" if can_read(e.path) else None)
+                if info["skipped"] is None:
+                    del info["skipped"]
             files[e.path] = info
         st = self.dirs[""]["stats"]
         return {
             "id": self.id, "root": self.source["url"] if self.source else str(self.root), "name": self.name,
             "source": self.source, "git": self.git,
-            "stats": {**st, "py_analyzed": len(self.py)},
+            "stats": {**st, "py_analyzed": len(self.code), "read": len(self.code)},
+            "read_languages": self.read_languages(),
             "languages": self.languages(),
             "readme": {k: v for k, v in self.readme.items() if k != "text"} if self.readme else None,
             "entry_points": self.entry_points,

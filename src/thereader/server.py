@@ -49,7 +49,8 @@ def enable_public() -> None:
     allow_any_host()
     # Sized for a small server (512 MB): one project read at a time, no helper processes, two projects in memory.
     # A project the size of Django (about 2,900 Python files) needs about 250 MB while it's read.
-    index.MAX_PY_FILES = int(os.environ.get("THE_READER_MAX_PY_FILES", "2500"))
+    index.MAX_PY_FILES = int(os.environ.get("THE_READER_MAX_FILES") or os.environ.get("THE_READER_MAX_PY_FILES")
+                             or "2500")
     index.WORKERS = int(os.environ.get("THE_READER_WORKERS", "1"))
     jobs.MAX_OPEN = int(os.environ.get("THE_READER_MAX_OPEN", "2"))
     jobs._slots = threading.BoundedSemaphore(int(os.environ.get("THE_READER_MAX_BUSY", "1")))
@@ -228,8 +229,8 @@ def _ready_index(rid: str):
 
 def _repo_file(rid: str, path: str) -> dict:
     idx = _ready_index(rid)
-    if path not in idx.py:
-        raise HTTPException(404, f"{path} isn't a Python file in this project.")
+    if path not in idx.code:
+        raise HTTPException(404, f"{path} isn't a file The Reader can read in this project.")
     try:
         mtime = (idx.root / path).stat().st_mtime
     except OSError:
