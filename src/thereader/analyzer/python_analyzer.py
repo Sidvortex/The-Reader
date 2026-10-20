@@ -766,6 +766,9 @@ def _link_self(out: dict, filename: str) -> None:
                     c.pop("module", None)
         kept = []
         for u in s.pop("uses", []):
+            if "recv" not in u:  # a name imported from another file: settled once every file is known
+                kept.append(u)
+                continue
             state, hits, _ = mm.resolve_member(u["recv"], u["attr"], filename)
             local = [q for f, q in hits if f == filename and by_id.get(q, {}).get("kind") in ("function", "method")]
             if state == "hit" and local:
