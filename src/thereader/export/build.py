@@ -12,6 +12,7 @@ from typing import Callable
 
 from ..explainer import explain_made
 from ..repo import summaries
+from ..repo.summaries import code_files
 from ..repo.index import TESTY, RepoIndex
 from .md import Block, parse
 
@@ -52,16 +53,16 @@ def _is_test(path: str) -> bool:
 
 
 def plan(idx: RepoIndex, scope: str, skip_tests: bool) -> tuple[list[str], dict[str, list[str]]]:
-    """The folders to include, in reading order, and the Python files directly in each."""
+    """The folders to include, in reading order, and the files of code directly in each."""
     folders: list[str] = []
     files: dict[str, list[str]] = {}
 
     def walk(path: str) -> None:
         node = idx.dirs[path]
-        if path != scope and (not node["stats"]["py_files"] or (skip_tests and _is_test(path + "/"))):
+        if path != scope and (not node["stats"]["read_files"] or (skip_tests and _is_test(path + "/"))):
             return
         folders.append(path)
-        files[path] = [f for f in node["files"] if f in idx.py and not (skip_tests and _is_test(f) and f != scope)]
+        files[path] = [f for f in node["files"] if f in idx.code and not (skip_tests and _is_test(f) and f != scope)]
         for d in node["dirs"]:
             walk(d)
 
@@ -93,11 +94,11 @@ def build(idx: RepoIndex, scope: str = "", depth: str = "functions", skip_tests:
     # the top: the project overview, or the chosen folder
     if scope:
         st = idx.dirs[scope]["stats"]
-        add(1, f"{scope}/", f"{_plural(st['py_files'], 'Python file')}, {st['lines']:,} lines of code",
+        add(1, f"{scope}/", f"{code_files(idx, st['read_files'])}, {st['lines']:,} lines of code",
             summaries.made_folder(idx, scope))
     else:
         st = idx.dirs[""]["stats"]
-        add(1, "Overview", f"{_plural(st['files'], 'file')}, {_plural(st['py_files'], 'Python file')}",
+        add(1, "Overview", f"{_plural(st['files'], 'file')}, {code_files(idx, st['read_files'])}",
             summaries.made_overview(idx), mono=False)
 
     done = 0
@@ -107,12 +108,12 @@ def build(idx: RepoIndex, scope: str = "", depth: str = "functions", skip_tests:
             break
         if folder != scope:
             st = idx.dirs[folder]["stats"]
-            if not add(1, f"{folder}/", f"{_plural(st['py_files'], 'Python file')}, {st['lines']:,} lines of code",
+            if not add(1, f"{folder}/", f"{code_files(idx, st['read_files'])}, {st['lines']:,} lines of code",
                        summaries.made_folder(idx, folder)):
                 stopped = True
                 break
         elif not scope and files[folder] and depth != "folders":
-            doc.sections.append(Section(1, "Files at the top level", "Python files directly in the project folder",
+            doc.sections.append(Section(1, "Files at the top level", "Files of code directly in the project folder",
                                         [], False, _anchor(len(doc.sections)), mono=False))
         if depth == "folders":
             continue
@@ -132,9 +133,13 @@ def build(idx: RepoIndex, scope: str = "", depth: str = "functions", skip_tests:
                 break
             if depth == "functions":
                 for s in a["symbols"]:
-                    if s["kind"] == "module":
-                        continue
+                    if s["kind"] not in ("function", "method", "class"):  # CSS rules and page elements stay in
+                        continue                                          # the file's summary
                     kind = {"method": "method", "class": "class"}.get(s["kind"], "function")
+                    if s.get("component"):
+                        kind = "component"
+                    elif "interface" in s["decorators"]:
+                        kind = "interface"
                     lines = f"line {s['start_line']}" if s["start_line"] == s["end_line"] \
                         else f"lines {s['start_line']}–{s['end_line']}"
                     title = s["qualname"] + ("" if s["kind"] == "class" else "()")

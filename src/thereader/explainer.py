@@ -142,7 +142,10 @@ def _sym(a: dict, sid: str) -> dict:
 
 
 def _label(a: dict, sid: str) -> str:
-    return "module code" if sid == "<module>" else f"`{_sym(a, sid)['qualname']}`"
+    if sid == "<module>":
+        return "component code" if a["file"].get("component") else "page scripts" if _lang(a) == "html" \
+            else "module code"
+    return f"`{_sym(a, sid)['qualname']}`"
 
 
 def _names(a: dict, ids) -> str:
@@ -150,16 +153,48 @@ def _names(a: dict, ids) -> str:
 
 
 # ---------------------------------------------------------------- structural (no AI)
+_MODULE_CODE = {
+    "python": "Code that runs at import time, outside any function.",
+    "javascript": "Code that runs when the file is loaded, outside any function.",
+    "typescript": "Code that runs when the file is loaded, outside any function.",
+    "vue": "The component's own code: its <script> part, plus what its template shows and calls.",
+    "svelte": "The component's own code: its <script> part, plus what its markup shows and calls.",
+    "html": "The page's inline scripts, plus the functions its markup calls (onclick and the like).",
+    "css": "The stylesheet as a whole.",
+}
+
+
+def _lang(a: dict) -> str:
+    return a["file"].get("language", "python")
+
+
 def structural(a: dict, sid: str) -> str:
     if sid == "<file>":
         return _structural_file(a)
     s = _sym(a, sid)
     parts: list[str] = []
+    if s["kind"] == "rule":
+        n = s["end_line"] - s["start_line"] + 1
+        what = f"`{s['name']}`" if not s["name"].startswith("@") else f"the `{s['name'].split()[0]}` block `{s['name']}`"
+        parts.append(f"Styles for {what}, {n} line{'s' if n != 1 else ''}.")
+        if s.get("docstring"):
+            parts.append(s["docstring"])
+        if s["children"]:
+            parts.append(f"**Rules inside:** {len(s['children'])}.")
+        return "\n\n".join(parts)
+    if s["kind"] == "element":
+        return f"`{s['name']}` on line {s['start_line']} of the page."
     if s["kind"] == "module":
-        parts.append("Code that runs at import time, outside any function.")
+        parts.append(_MODULE_CODE.get(_lang(a), _MODULE_CODE["python"]))
     elif s["kind"] == "class":
-        bases = f" extending {', '.join(f'`{b}`' for b in s['bases'])}" if s["bases"] else ""
-        parts.append(f"Class `{s['name']}`{bases}.")
+        if "interface" in s["decorators"]:
+            bases = f" extending {', '.join(f'`{b}`' for b in s['bases'])}" if s["bases"] else ""
+            parts.append(f"Interface `{s['name']}`{bases}: a type that describes what an object has.")
+        elif "object" in s["decorators"]:
+            parts.append(f"`{s['name']}` is an object that holds functions, used like a class with one instance.")
+        else:
+            bases = f" extending {', '.join(f'`{b}`' for b in s['bases'])}" if s["bases"] else ""
+            parts.append(f"Class `{s['name']}`{bases}.")
         if doc := doc_summary(s.get("docstring")):
             parts.append(doc)
         methods = [c for c in s["children"] if _sym(a, c)["kind"] == "method"]
@@ -167,6 +202,10 @@ def structural(a: dict, sid: str) -> str:
             parts.append(f"**Methods:** {_names(a, methods)}")
         return "\n\n".join(parts)
     else:
+        if s.get("component"):
+            parts.append("A component: it returns the markup to show, and other components use it as a tag.")
+        elif s.get("hook"):
+            parts.append("A hook: a function components call to share stateful logic (its name starts with `use`).")
         if doc := doc_summary(s.get("docstring")):
             parts.append(doc)
         sig_bits = []
@@ -186,7 +225,8 @@ def structural(a: dict, sid: str) -> str:
 
         bits = [x for x in (n("decision", "decision"), n("loop", "loop"),
                             "error handling" if "try" in kinds else None,
-                            n("return point", "return"), n("raise point", "raise")) if x]
+                            n("return point", "return"),
+                            n("raise point" if _lang(a) == "python" else "throw point", "raise")) if x]
         if bits:
             parts.append("**Shape:** " + ", ".join(bits) + f". {complexity_words(s['complexity'])}")
         else:
@@ -199,7 +239,8 @@ def structural(a: dict, sid: str) -> str:
 # decorators that wrap or describe a function rather than hand it to a framework
 _WRAPPERS = {"property", "cached_property", "staticmethod", "classmethod", "abstractmethod", "wraps", "overload",
              "override", "setter", "getter", "deleter", "lru_cache", "cache", "final", "contextmanager",
-             "asynccontextmanager", "total_ordering", "deprecated", "dataclass"}
+             "asynccontextmanager", "total_ordering", "deprecated", "dataclass", "get", "set", "static", "interface",
+             "object"}
 
 
 def _files(paths: list[str], limit: int = 3) -> str:
@@ -240,7 +281,12 @@ def _uncalled_note(a: dict, s: dict) -> str:
         base = s["outside_bases"][0]
         return (f"_Nothing in this project calls it, but its class builds on `{base}` from outside the project, "
                 "whose own code may call it._")
-    is_property = any(d.split("(")[0].rsplit(".", 1)[-1] in ("property", "cached_property")
+    if s.get("component") and not a.get("repo"):
+        return "_Nothing in this file shows it as a tag, so it's likely the root component or used by other files._"
+    if s.get("component"):
+        return ("_No file in this project shows it as a tag. It may be loaded by a router or framework by its file "
+                "name, kept for other projects to use, or simply unused._")
+    is_property = any(d.split("(")[0].rsplit(".", 1)[-1] in ("property", "cached_property", "get")
                       for d in s.get("decorators", []))
     if is_property:
         return "_A property: it runs when the attribute is read, and no place that reads it could be found._"
@@ -261,7 +307,74 @@ def _count(n: int, word: str) -> str:
     return f"{n:,} {word}" if n == 1 else f"{n:,} {word}{'es' if word.endswith('s') else 's'}"
 
 
+_NODE = {"assert", "async_hooks", "buffer", "child_process", "cluster", "console", "crypto", "dgram", "dns",
+         "events", "fs", "http", "http2", "https", "net", "os", "path", "perf_hooks", "process", "querystring",
+         "readline", "stream", "string_decoder", "timers", "tls", "tty", "url", "util", "v8", "vm", "worker_threads",
+         "zlib", "module", "test"}
+
+
+def _package(spec: str) -> str:
+    parts = spec.split("/")
+    return "/".join(parts[:2]) if spec.startswith("@") else parts[0]
+
+
+def _structural_web(a: dict) -> str:
+    """The file summary for JavaScript, TypeScript, Vue, Svelte, HTML and CSS."""
+    f, lang = a["file"], _lang(a)
+    syms = [s for s in a["symbols"] if s["kind"] != "module"]
+    head = f"`{f['name']}`: {_count(f['lines'], 'line')}"
+    if lang == "css":
+        rules = [s for s in syms if s["kind"] == "rule"]
+        parts = [head + f", {_count(len(rules), 'rule')}."]
+        if f.get("docstring"):
+            parts.append(f["docstring"])
+        if a["imports"]:
+            parts.append("**Imports:** " + ", ".join(f"`{i['module']}`" for i in a["imports"]))
+        if a.get("globals"):
+            parts.append("**Custom properties:** " + ", ".join(f"`{g['name']}`" for g in a["globals"][:12])
+                         + (" …" if len(a["globals"]) > 12 else ""))
+        return "\n\n".join(parts)
+    comps = [s for s in syms if s.get("component")]
+    classes = [s for s in syms if s["kind"] == "class" and "object" not in s["decorators"]]
+    funcs = [s for s in syms if s["kind"] in ("function", "method") and not s.get("component")]
+    counts = [_count(len(comps), "component"), _count(len(classes), "class"), _count(len(funcs), "function")]
+    parts = [head + "".join(f", {c}" for c in counts if c) + "."]
+    if f.get("component"):
+        parts.append(f"A {lang.capitalize()} component: markup, the code behind it and usually its styles in one file.")
+    if doc := doc_summary(f.get("docstring")):
+        parts.append(doc)
+    loads = [i for i in a["imports"] if i.get("html")]
+    if loads:
+        parts.append("**Loads:** " + ", ".join(f"`{i['module']}`" for i in loads))
+    specs = [i["module"] for i in a["imports"] if not i.get("html")]
+    libs = sorted({_package(m) for m in specs if not m.startswith((".", "/", "@/", "~/", "#")) and not m.startswith(
+        "node:") and _package(m) not in _NODE})
+    node = sorted({m.removeprefix("node:").split("/")[0] for m in specs if m.startswith("node:") or _package(m) in _NODE})
+    if libs:
+        parts.append("**Libraries:** " + ", ".join(f"`{t}`" for t in libs))
+    if node:
+        parts.append("**Node built-ins:** " + ", ".join(node))
+    if not a.get("repo"):
+        local = sorted({m for m in specs if m.startswith((".", "/", "@/", "~/"))})
+        if local:
+            parts.append("**Own files:** " + ", ".join(f"`{m}`" for m in local[:10]))
+    exported = [k for k in (a.get("exports") or {}) if k != "default"]
+    if exported:
+        parts.append("**Exports:** " + ", ".join(f"`{k}`" for k in exported[:12]) + (" …" if len(exported) > 12 else "")
+                     + (", plus a default export" if "default" in (a.get("exports") or {}) else ""))
+    hot = sorted([s for s in syms if s["kind"] in ("function", "method")], key=lambda s: -s["complexity"])[:3]
+    hot = [s for s in hot if s["complexity"] >= 5]
+    if hot:
+        parts.append("**Most intricate:** " + ", ".join(f"`{s['qualname']}` ({s['complexity']})" for s in hot))
+    if a["reading_order"]:
+        parts.append("**Suggested reading order:** " + " → ".join(
+            _label(a, i) for i in a["reading_order"][:8]) + (" → …" if len(a["reading_order"]) > 8 else ""))
+    return "\n\n".join(parts)
+
+
 def _structural_file(a: dict) -> str:
+    if _lang(a) != "python":
+        return _structural_web(a)
     f = a["file"]
     syms = [s for s in a["symbols"] if s["kind"] != "module"]
     classes = [s for s in syms if s["kind"] == "class"]
@@ -301,7 +414,12 @@ SYSTEM = (
 )
 
 
+_FENCE = {"python": "python", "javascript": "javascript", "typescript": "typescript", "vue": "vue",
+          "svelte": "svelte", "html": "html", "css": "css"}
+
+
 def _prompt(a: dict, sid: str, context: str = "") -> str:
+    fence = _FENCE.get(_lang(a), "")
     name = a["file"].get("path") or a["file"]["name"]
     ctx = f"File: {name}\n\nOutline:\n{_outline(a)}\n\nImports:\n" + "\n".join(
         f"- {i['module']}" + (f": {', '.join(n['name'] for n in i['names'])}" if i["names"] else "") for i in a["imports"])
@@ -309,7 +427,7 @@ def _prompt(a: dict, sid: str, context: str = "") -> str:
         ctx += f"\n\n{context}"
     if sid == "<file>":
         return (
-            f"{ctx}\n\nFull source:\n```python\n{_code(a, {'start_line': 1, 'end_line': a['file']['lines']})}\n```\n\n"
+            f"{ctx}\n\nFull source:\n```{fence}\n{_code(a, {'start_line': 1, 'end_line': a['file']['lines']})}\n```\n\n"
             "Write an overview of this file in under 220 words:\n"
             "1. One sentence: what this file is for.\n"
             "2. **Main pieces**: 3-6 bullets, each `name`: its role.\n"
@@ -320,7 +438,7 @@ def _prompt(a: dict, sid: str, context: str = "") -> str:
     callers = _names(a, s["called_by"]) or "nothing in this file"
     return (
         f"{ctx}\n\nExplain `{s['qualname']}` ({s['kind']}), called by {callers}:\n"
-        f"```python\n{_code(a, s)}\n```\n\n"
+        f"```{fence}\n{_code(a, s)}\n```\n\n"
         "Respond in under 180 words:\n"
         "- First line: one plain sentence saying what it does and why it exists (no heading).\n"
         "- **Step by step**: a numbered list of the logic, each step citing lines.\n"

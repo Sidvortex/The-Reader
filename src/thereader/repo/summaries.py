@@ -40,34 +40,72 @@ def _other_langs(idx: RepoIndex, files: list[str]) -> str:
     return ", ".join(name for name, _ in langs.most_common(3))
 
 
+def code_files(idx: RepoIndex, n: int, files: list[str] | None = None) -> str:
+    """"12 Python files", "40 TypeScript files" or "52 files of code" when there's a mix."""
+    langs = {idx.by_path[f].language for f in (files if files is not None else idx.code) if f in idx.code}
+    if len(langs) == 1:
+        lang = next(iter(langs)) or "code"
+        return _plural(n, f"{lang} file") if lang != "code" else _plural(n, "file of code")
+    return f"{n:,} file{'s' if n != 1 else ''} of code"
+
+
+def _python_only(idx: RepoIndex) -> bool:
+    """Python-only projects keep the exact AI prompts of earlier versions, so explanations already written
+    (and paid for) are still found in the cache."""
+    return all(a["file"].get("language", "python") == "python" for a in idx.code.values())
+
+
+def _files_under(idx: RepoIndex, path: str) -> list[str]:
+    return [f for f in idx.code if _under(f, path)]
+
+
 def _folder_blurb(idx: RepoIndex, path: str) -> str:
     node = idx.dirs[path]
     st = node["stats"]
     if node["doc"]:
         return node["doc"]
-    if st["py_files"]:
-        return f"{_plural(st['py_files'], 'Python file')}, {_plural(st['functions'], 'function')}"
+    if st["read_files"]:
+        what = code_files(idx, st["read_files"], _files_under(idx, path))
+        return f"{what}, {_plural(st['functions'], 'function')}" if st["functions"] else what
     files = [f for f in idx.by_path if _under(f, path)]
     langs = _other_langs(idx, files)
-    return f"{_plural(st['files'], 'file')}, no Python" + (f" ({langs})" if langs != "other" else "")
+    return _plural(st["files"], "file") + (f" ({langs})" if langs != "other" else "")
 
 
 def _file_blurb(idx: RepoIndex, f: str) -> str:
-    a = idx.py[f]
+    a = idx.code[f]
+    lang = a["file"].get("language", "python")
+    if lang == "css":
+        rules = sum(1 for s in a["symbols"] if s["kind"] == "rule")
+        return _plural(rules, "rule") + (f"; imports {_plural(len(a['imports']), 'stylesheet')}" if a["imports"] else "")
+    if lang == "html":
+        loads = [i for i in a["imports"] if i.get("html")]
+        return "web page" + (f" loading {_plural(len(loads), 'file')}" if loads else "")
     doc = _first_line(a["file"].get("docstring"))
     if doc:
         return doc
     kinds = Counter(s["kind"] for s in a["symbols"])
     funcs = kinds["function"] + kinds["method"]
+    comps = sum(1 for s in a["symbols"] if s.get("component"))
+    if a["file"].get("component"):
+        return f"{lang.capitalize()} component" + (f" with {_plural(funcs, 'function')}" if funcs else "")
+    if comps:
+        rest = funcs - comps
+        return _plural(comps, "component") + (f", {_plural(rest, 'other function')}" if rest > 0 else "")
     if kinds["class"] or funcs:
         bits = [_plural(kinds["class"], "class")] if kinds["class"] else []
         return ", ".join(bits + ([_plural(funcs, "function")] if funcs else []))
     names = sum(len(i["names"]) for i in a["imports"])
     if f.endswith("__init__.py") and names:
         return f"package entry; brings in {_plural(names, 'name')} from other modules"
+    reexports = len(a.get("exports") or {}) + len(a.get("export_stars") or [])
+    if lang in ("javascript", "typescript") and reexports and not a["symbols"][1:]:
+        return f"passes on {_plural(reexports, 'name')} from other files"
     if a["file"].get("main_guard"):
         return "runs as a script"
-    return f"{_plural(idx.by_path[f].lines, 'line')} of module-level code"
+    if lang in ("javascript", "typescript") and not funcs and a.get("exports"):
+        return f"defines {_plural(len(a['exports']), 'exported value')}"
+    return f"{_plural(idx.by_path[f].lines, 'line')} of top-level code"
 
 
 def folder_links(idx: RepoIndex, folder: str) -> tuple[Counter, Counter]:
@@ -97,7 +135,8 @@ def structural_overview(idx: RepoIndex) -> str:
     if langs:
         parts.append("**Written in:** " + ", ".join(f"{l['name']} ({l['lines']:,} lines)" for l in langs) + ".")
     st = idx.dirs[""]["stats"]
-    parts.append(f"**Size:** {_plural(st['files'], 'file')}, including {_plural(st['py_files'], 'Python file')} "
+    read = ", ".join(f"{l['files']:,} {l['name']}" for l in idx.read_languages())
+    parts.append(f"**Size:** {_plural(st['files'], 'file')}; The Reader read {st['read_files']:,} of them ({read}), "
                  f"with {_plural(st['functions'], 'function')} and {_plural(st['classes'], 'class')}.")
     eps = [e for e in idx.entry_points if e["file"]][:5]
     if eps:
@@ -125,8 +164,8 @@ def structural_overview(idx: RepoIndex) -> str:
 def structural_folder(idx: RepoIndex, folder: str) -> str:
     node = idx.dirs[folder]
     st = node["stats"]
-    parts = [f"**`{node['path']}/`**: {_plural(st['files'], 'file')}, {_plural(st['py_files'], 'Python file')}, "
-             f"{st['lines']:,} lines of code."]
+    parts = [f"**`{node['path']}/`**: {_plural(st['files'], 'file')}, "
+             f"{code_files(idx, st['read_files'], _files_under(idx, folder))}, {st['lines']:,} lines of code."]
     if node["doc"]:
         parts.append(node["doc"])
     if node["dirs"]:
@@ -134,13 +173,13 @@ def structural_folder(idx: RepoIndex, folder: str) -> str:
         if len(node["dirs"]) > 30:
             rows.append(f"- and {len(node['dirs']) - 30} more")
         parts.append("**Folders:**\n" + "\n".join(rows))
-    py_files = [f for f in node["files"] if f in idx.py]
-    if py_files:
-        rows = [f"- `{f}`: {_file_blurb(idx, f)}" for f in py_files[:25]]
-        if len(py_files) > 25:
-            rows.append(f"- and {len(py_files) - 25} more")
+    read = [f for f in node["files"] if f in idx.code]
+    if read:
+        rows = [f"- `{f}`: {_file_blurb(idx, f)}" for f in read[:25]]
+        if len(read) > 25:
+            rows.append(f"- and {len(read) - 25} more")
         parts.append("**Files:**\n" + "\n".join(rows))
-    others = [f for f in node["files"] if f not in idx.py]
+    others = [f for f in node["files"] if f not in idx.code]
     if others:
         parts.append(f"**Other files here:** {len(others)} ({_other_langs(idx, others)}).")
     uses, used_by = folder_links(idx, folder)
@@ -164,13 +203,16 @@ def _tree_text(idx: RepoIndex) -> str:
             sub = idx.dirs[d]
             st = sub["stats"]
             desc = f" — {sub['doc']}" if sub["doc"] else ""
-            lines.append(f"{pad}{sub['name']}/  ({st['py_files']} Python files, {st['files']} files){desc}")
+            if _python_only(idx):
+                lines.append(f"{pad}{sub['name']}/  ({st['py_files']} Python files, {st['files']} files){desc}")
+            else:
+                lines.append(f"{pad}{sub['name']}/  ({st['read_files']} code files, {st['files']} files){desc}")
             if depth < 3 and len(lines) < TREE_LINES:
                 walk(d, depth + 1)
         others = 0
         for f in node["files"]:
-            if f in idx.py:
-                doc = _first_line(idx.py[f]["file"].get("docstring"))
+            if f in idx.code:
+                doc = _first_line(idx.code[f]["file"].get("docstring"))
                 lines.append(f"{pad}{_base(f)}" + (f" — {doc}" if doc else ""))
             else:
                 others += 1
@@ -184,18 +226,31 @@ def _tree_text(idx: RepoIndex) -> str:
 
 
 def _file_outline(idx: RepoIndex, f: str) -> str:
-    a = idx.py[f]
+    a = idx.code[f]
     out = []
     doc = _first_line(a["file"].get("docstring"))
     out.append(f"{f}" + (f" — {doc}" if doc else ""))
+    if a["file"].get("language") == "css":
+        rules = [s["name"] for s in a["symbols"] if s["kind"] == "rule" and s["parent"] is None]
+        out.append("  rules: " + ", ".join(rules[:15]) + (" …" if len(rules) > 15 else ""))
+        return "\n".join(out)
+    py = a["file"].get("language", "python") == "python"
     for s in a["symbols"]:
-        if s["kind"] == "class":
+        if s["kind"] == "class" and py:
             methods = [x["name"] for x in a["symbols"] if x["parent"] == s["id"]]
             out.append(f"  class {s['name']}" + (f"({', '.join(s['bases'])})" if s["bases"] else "")
                        + (f": {', '.join(methods[:12])}" if methods else ""))
-        elif s["kind"] == "function" and s["parent"] is None:
+        elif s["kind"] == "function" and s["parent"] is None and py:
             d = _first_line(s.get("docstring"))
             out.append(f"  def {s['name']}()" + (f" — {d}" if d else ""))
+        elif s["kind"] == "class":
+            methods = [x["name"] for x in a["symbols"] if x["parent"] == s["id"]]
+            out.append(f"  class {s['name']}" + (f" (based on {', '.join(s['bases'])})" if s["bases"] else "")
+                       + (f": {', '.join(methods[:12])}" if methods else ""))
+        elif s["kind"] == "function" and s["parent"] is None:
+            d = _first_line(s.get("docstring"))
+            what = "component" if s.get("component") else "hook" if s.get("hook") else "function"
+            out.append(f"  {what} {s['name']}()" + (f" — {d}" if d else ""))
     return "\n".join(out)
 
 
@@ -210,7 +265,8 @@ def _overview_prompt(idx: RepoIndex) -> str:
         f"Project folder: {idx.name}\n\n"
         f"README (excerpt):\n{(r or {}).get('text') or '(no README)'}\n\n"
         f"Languages: {langs}\n\nEntry points:\n{eps}\n\nDependencies:\n{deps}\n\n"
-        f"Folder structure (Python files with their docstrings):\n{_tree_text(idx)}\n\n"
+        + ("Folder structure (Python files with their docstrings):\n" if _python_only(idx) else
+           "Folder structure (code files with their doc comments):\n") + f"{_tree_text(idx)}\n\n"
         f"Most used files:\n{used}\n\n"
         "Write an overview for a developer who is new to this codebase, in under 300 words:\n"
         "1. One or two sentences: what the project does and who it is for.\n"
@@ -231,7 +287,7 @@ def _folder_prompt(idx: RepoIndex, folder: str) -> str:
     node = idx.dirs[folder]
     outline, used_chars = [], 0
     for f in node["files"]:
-        if f in idx.py:
+        if f in idx.code:
             block = _file_outline(idx, f)
             if used_chars + len(block) > FOLDER_OUTLINE_CHARS:
                 outline.append(f"{f} (outline omitted for length)")
@@ -243,7 +299,8 @@ def _folder_prompt(idx: RepoIndex, folder: str) -> str:
     prompt = (
         f"Project: {idx.name}\nFolder: {node['path']}/\n"
         + (f"Package docstring: {node['doc']}\n" if node["doc"] else "")
-        + "\nPython files in this folder, with outlines:\n" + ("\n".join(outline) or "none")
+        + ("\nPython files in this folder, with outlines:\n" if _python_only(idx) else
+           "\nCode files in this folder, with outlines:\n") + ("\n".join(outline) or "none")
         + f"\n\nSubfolders:\n{subs}\n\n"
         f"Used by (outside this folder): {', '.join(f for f, _ in used_by.most_common(8)) or 'nothing'}\n"
         f"Uses (outside this folder): {', '.join(f for f, _ in uses.most_common(8)) or 'nothing'}\n\n"
