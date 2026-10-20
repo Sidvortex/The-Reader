@@ -1,8 +1,11 @@
-"""Work out each Python file's module name, then resolve imports and calls from one file into another."""
+"""Work out each Python file's module name, then resolve imports and calls from one file into another.
+JavaScript, TypeScript, Vue, Svelte and HTML files go through jsmodules.py for the parts that differ."""
 
 from __future__ import annotations
 
 import re
+
+from .jsmodules import JS_LANGS, JsResolver
 
 PY_SUFFIXES = (".py", ".pyi", ".pyw")
 
@@ -45,7 +48,11 @@ def import_table(analysis: dict) -> tuple[dict[str, str], list[str]]:
 
 
 class ModuleMap:
-    def __init__(self, py_files: list[str], root_name: str, analyses: dict[str, dict]):
+    def __init__(self, files: list[str], root_name: str, analyses: dict[str, dict],
+                 project_files: dict[str, bytes] | None = None, known: set[str] | None = None):
+        self.analyses = analyses
+        self.langs = {p: a["file"].get("language", "python") for p, a in analyses.items()}
+        py_files = [p for p in files if self.langs.get(p, "python") == "python"]
         self.files = set(py_files)
         self.root_name = root_name
         self.pkg_dirs = {_parent(p) for p in py_files if _stem(p) == "__init__"}
@@ -65,8 +72,15 @@ class ModuleMap:
         self.symbols: dict[str, dict[str, dict]] = {
             p: {s["qualname"]: s for s in a["symbols"] if s["kind"] != "module"} for p, a in analyses.items()
         }
-        self.imports: dict[str, tuple[dict[str, str], list[str]]] = {p: import_table(a) for p, a in analyses.items()}
+        self.imports: dict[str, tuple[dict[str, str], list[str]]] = {
+            p: import_table(a) for p, a in analyses.items() if self.langs[p] == "python"}
         self._subclasses: dict[tuple[str, str], list[tuple[str, str]]] | None = None
+        self.js = JsResolver(self, project_files, known)
+        self._types: dict[tuple[str, str], object] = {}  # (file, type text) -> parsed type
+        self._members: dict[tuple[str, str, str], object] = {}
+
+    def is_js(self, f: str) -> bool:
+        return self.langs.get(f) in JS_LANGS
 
     # ---------- names ----------
     def _canonical(self, path: str) -> str:
@@ -192,6 +206,17 @@ class ModuleMap:
         if "recv" in call and call.get("kind") != "internal":
             hits = self.recv_targets(call, importer)
             return hits[0] if hits else None
+        if self.is_js(importer):
+            if call.get("kind") == "internal" or not call.get("ref"):
+                return None
+            hit = self.js.name_in(importer, call["ref"])
+            if not hit or not hit[1] or hit[0] == importer:
+                return None
+            sym = self.symbols.get(hit[0], {}).get(hit[1])
+            if sym and sym["kind"] == "class" and f"{hit[1]}.constructor" in self.symbols[hit[0]] \
+                    and not call.get("jsx"):
+                return (hit[0], f"{hit[1]}.constructor")  # `new Foo()` runs its constructor
+            return hit
         if call.get("kind") != "external" or not call.get("module"):
             return None
         mod, label = call["module"], call["name"]
@@ -214,6 +239,19 @@ class ModuleMap:
     def imported_names(self, analysis: dict, importer: str) -> list[tuple[str, tuple[str, str]]]:
         """(name, (file, qualname)) for each function or class this file imports from another file."""
         out = []
+        if self.is_js(importer):
+            for imp in analysis.get("imports", []):
+                target = self.js.resolve_spec(importer, imp["module"])
+                if target is None or target == importer:
+                    continue
+                names = [n["name"] for n in imp["names"] if n["name"] != "*"]
+                if imp.get("dynamic") and not names:  # import("./page"): whatever it uses of that file
+                    names = list(self.analyses.get(target, {}).get("exports") or {})
+                for name in names:
+                    hit = self.js.export(target, name)
+                    if hit and hit[1] and hit[0] != importer:
+                        out.append((name, hit))
+            return out
         for imp in analysis.get("imports", []):
             for n in imp["names"]:
                 if n["name"] == "*":
@@ -231,6 +269,12 @@ class ModuleMap:
     def import_targets(self, analysis: dict, importer: str) -> list[str]:
         """Files this file imports (each listed once per import statement name)."""
         out: list[str] = []
+        if self.is_js(importer) or self.langs.get(importer) == "css":
+            for imp in analysis.get("imports", []):
+                target = self.js.resolve_spec(importer, imp["module"])
+                if target and target != importer:
+                    out += [target] * max(1, len([n for n in imp["names"] if n["name"] != "*"]))
+            return out
         for imp in analysis.get("imports", []):
             mod = imp["module"]
             names = [n["name"] for n in imp["names"]] or [None]
@@ -272,6 +316,8 @@ class ModuleMap:
 
     def name_in(self, f: str, dotted: str, depth: int = 0) -> tuple[str, str | None] | None:
         """What a (dotted) name means inside file f: its own definition, or what it imports."""
+        if self.is_js(f):
+            return self.js.name_in(f, dotted, depth)
         syms = self.symbols.get(f, {})
         if dotted in syms:
             return (f, dotted)
@@ -286,6 +332,15 @@ class ModuleMap:
         return None
 
     def parse_type(self, f: str, text: str, depth: int = 0):
+        key = (f, text)
+        if key in self._types:
+            return self._types[key]
+        self._types[key] = None  # a type that refers to itself ends here
+        v = self.js.parse_type(f, text, depth) if self.is_js(f) else self._parse_type(f, text, depth)
+        self._types[key] = v
+        return v
+
+    def _parse_type(self, f: str, text: str, depth: int = 0):
         if depth > 12 or not text:
             return None
         t = text.strip().strip("'\"").strip()
@@ -372,6 +427,9 @@ class ModuleMap:
             if v[0] == "map":
                 return [v[2] if st == "[]" else v[1]]
             return []
+        if v[0] == "obj":  # a TypeScript object type written inline
+            t = v[2].get(st[:-2] if st.endswith("()") else st)
+            return self._merge([self.parse_type(v[1], t, depth + 1)]) if t and not st.endswith("()") else []
         if v[0] != "cls":
             return []
         call = st.endswith("()")
@@ -406,9 +464,16 @@ class ModuleMap:
 
     @staticmethod
     def is_property(sym: dict) -> bool:
-        return any(d.split("(")[0].rsplit(".", 1)[-1] in ("property", "cached_property") for d in sym.get("decorators", []))
+        return any(d.split("(")[0].rsplit(".", 1)[-1] in ("property", "cached_property", "get")
+                   for d in sym.get("decorators", []))
 
     def _member(self, f: str, cls: str, name: str):
+        key = (f, cls, name)
+        if key not in self._members:
+            self._members[key] = self._find_member(f, cls, name)
+        return self._members[key]
+
+    def _find_member(self, f: str, cls: str, name: str):
         """("method", file, qualname) or ("attr", file, desc) for a member of a class, looking through its bases;
         "missing" when every class involved is known and none has it; None when a base class can't be seen."""
         complete = True
@@ -472,7 +537,7 @@ class ModuleMap:
 
     def overrides(self, f: str, cls: str, meth: str) -> list[tuple[str, str]]:
         """Versions of method `meth` defined in subclasses (in any file) of class `cls` in file f."""
-        if meth == "__init__" or self.symbols.get(f, {}).get(cls, {}).get("kind") != "class":
+        if meth in ("__init__", "constructor") or self.symbols.get(f, {}).get(cls, {}).get("kind") != "class":
             return []
         if self._subclasses is None:
             self._subclasses = {}
