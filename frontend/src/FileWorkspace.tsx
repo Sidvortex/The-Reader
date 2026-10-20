@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Canvas from "./Canvas";
 import DetailPanel from "./DetailPanel";
+import { moduleLabel } from "./layout";
 import Outline from "./Outline";
 import type { Analysis } from "./types";
 
@@ -62,7 +63,7 @@ export default function FileWorkspace({ analysis, ai }: { analysis: Analysis; ai
     return () => window.removeEventListener("keydown", onKey);
   }, [step, back]);
 
-  const symName = useMemo(() => (id: string) => (id === "<module>" ? "module code" : id), []);
+  const symName = useMemo(() => (id: string) => (id === "<module>" ? moduleLabel(analysis) : id), [analysis]);
 
   return (
     <main className="workspace">

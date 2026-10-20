@@ -4,7 +4,7 @@ import {
   type Edge, type Node, type NodeProps,
 } from "@xyflow/react";
 import type { Analysis, Call, FlowNodeKind, Sym } from "./types";
-import { chipLabel, layoutFlow, layoutMap, maybeEntry, symSub, type Ghost } from "./layout";
+import { chipLabel, layoutFlow, layoutMap, mapSymbols, maybeEntry, symSub, type Ghost } from "./layout";
 import { boundsOf, edgeTypes, flowSettings } from "./graphParts";
 
 type Nav = {
@@ -170,6 +170,18 @@ function Inner({ analysis, view, selected, trail, lines, onOpen, onLines, onOpen
         {sym?.kind === "class"
           ? <p>Classes don't have a flow of their own. Pick one of its methods in the outline.</p>
           : <p>Pick a function in the outline or the map to see its flowchart.</p>}
+      </div>
+    );
+  }
+  if (view === "map" && !mapSymbols(analysis).length) {
+    const lang = analysis.file.language;
+    return (
+      <div className="canvas-empty">
+        <p>{lang === "css"
+          ? "A stylesheet has no functions to map. Its rules are in the outline; pick one to see it."
+          : lang === "html"
+            ? "This page has no scripts with functions to map. Its headings and sections are in the outline."
+            : "Nothing in this file calls anything, so there's no map to draw. Its outline lists what it defines."}</p>
       </div>
     );
   }

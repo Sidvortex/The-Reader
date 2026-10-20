@@ -4,7 +4,8 @@ import Code from "./Code";
 import Markdown from "./Markdown";
 import { useExplanation } from "./explanations";
 import { base, stem } from "./graphParts";
-import type { Analysis, Explanation } from "./types";
+import { moduleLabel } from "./layout";
+import type { Analysis, Explanation, Sym } from "./types";
 
 type Props = {
   analysis: Analysis;
@@ -20,7 +21,26 @@ type Props = {
   linkPath?: (name: string) => ReactNode | null;
 };
 
-const label = (id: string) => (id === "<module>" ? "module code" : id);
+const label = (id: string) => (id === "<module>" ? "top-level code" : id);
+
+// markers the analyzer keeps with the decorators, shown as words rather than as @decorators
+const MARKERS = new Set(["get", "set", "static", "interface", "object"]);
+const realDecorators = (s: Sym) => s.decorators.filter((d) => !MARKERS.has(d));
+
+function kindLabel(a: Analysis, s: Sym): string {
+  if (s.kind === "module") {
+    const m = moduleLabel(a);
+    return m[0].toUpperCase() + m.slice(1);
+  }
+  if (s.kind === "rule") return "CSS rule";
+  if (s.kind === "element") return "Page element";
+  const words = [s.is_async ? "async" : "", s.decorators.includes("static") ? "static" : "",
+                 s.decorators.includes("get") ? "getter" : s.decorators.includes("set") ? "setter" : ""].filter(Boolean);
+  const kind = s.component ? "component" : s.hook ? "hook" : s.kind === "class" && s.decorators.includes("interface")
+    ? "interface" : s.kind === "class" && s.decorators.includes("object") ? "object" : s.kind;
+  const label = [...words, kind].join(" ");
+  return label[0].toUpperCase() + label.slice(1);
+}
 
 export default memo(function DetailPanel({ analysis, selected, lines, ai, onOpen, explain, onOpenExternal, linkPath }: Props) {
   const sym = selected ? analysis.symbols.find((s) => s.id === selected) ?? null : null;
@@ -62,7 +82,7 @@ export default memo(function DetailPanel({ analysis, selected, lines, ai, onOpen
   const title = analysis.file.path ?? analysis.file.name;
 
   const fileChip = (f: string) => (
-    <button key={f} className="chip" title={f} onClick={() => onOpenExternal?.(f, null)}>{base(f) === "__init__.py" ? f.split("/").slice(-2).join("/") : base(f)}</button>
+    <button key={f} className="chip" title={f} onClick={() => onOpenExternal?.(f, null)}>{/^(__init__\.py|index\.[cm]?[jt]sx?)$/.test(base(f)) ? f.split("/").slice(-2).join("/") : base(f)}</button>
   );
 
   return (
@@ -70,12 +90,12 @@ export default memo(function DetailPanel({ analysis, selected, lines, ai, onOpen
       <header className="detail-head">
         {sym ? (
           <>
-            <div className="kicker">{sym.kind === "module" ? "Module code" : `${sym.is_async ? "async " : ""}${sym.kind}`}{sym.kind !== "module" && <span>, lines {sym.start_line}–{sym.end_line}</span>}</div>
+            <div className="kicker">{kindLabel(analysis, sym)}{sym.kind !== "module" && <span>, lines {sym.start_line}–{sym.end_line}</span>}</div>
             <h2>
               {sym.kind === "module" ? analysis.file.name : sym.qualname}
               {(sym.kind === "function" || sym.kind === "method") && <span className="sig">({sym.params.join(", ")}){sym.returns ? ` → ${sym.returns}` : ""}</span>}
             </h2>
-            {sym.decorators.length > 0 && <div className="decos">{sym.decorators.map((d) => <code key={d}>@{d}</code>)}</div>}
+            {realDecorators(sym).length > 0 && <div className="decos">{realDecorators(sym).map((d) => <code key={d}>@{d}</code>)}</div>}
           </>
         ) : (
           <>

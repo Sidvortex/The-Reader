@@ -2,6 +2,14 @@ import ELK from "elkjs/lib/elk.bundled.js";
 import type { Edge, Node } from "@xyflow/react";
 import type { Analysis, Call, FlowChart, RepoIndex, Sym } from "./types";
 
+/** What a file's top-level code is called: module code, component code, page scripts. */
+export function moduleLabel(a: Analysis): string {
+  if (a.file.component) return "component code";
+  if (a.file.language === "html") return "page scripts";
+  if (a.file.language === "css") return "whole stylesheet";
+  return "module code";
+}
+
 const elk = new ELK();
 
 export type Pt = { x: number; y: number };
@@ -29,13 +37,15 @@ export function maybeEntry(s: Sym): boolean {
 
 /** The second line of a call-map box, before its complexity bar. */
 export function symSub(s: Sym): { text: string; pill: string | null } {
-  const text = s.kind === "module" ? "runs on import" : s.kind === "class" ? "class"
-    : `${s.is_async ? "async " : ""}${s.end_line - s.start_line + 1} lines`;
+  const n = s.end_line - s.start_line + 1;
+  const text = s.kind === "module" ? (s.role === "component" ? "template and script" : s.role === "page"
+    ? "inline scripts" : "runs on import") : s.kind === "class" ? "class"
+    : `${s.is_async ? "async " : ""}${n} line${n === 1 ? "" : "s"}`;
   const ext = s.called_by_ext?.length ?? 0;
   return { text, pill: ext ? `+${ext} outside` : maybeEntry(s) ? "start?" : null };
 }
 
-const fileStem = (path: string) => path.split("/").pop()!.replace(/\.pyi?$/, "");
+const fileStem = (path: string) => path.split("/").pop()!.replace(/\.(pyi?|[cm]?[jt]sx?|vue|svelte|html?|css)$/, "");
 
 /** What a call chip in a flowchart says: the function in this file, or `module.function` in another file. */
 export function chipLabel(c: Call): string {
@@ -217,7 +227,7 @@ export function ghostsFor(a: Analysis, syms: Sym[]): { ghosts: Ghost[]; edges: {
   const edges: { from: string; to: string }[] = [];
   const mk = (dir: "in" | "out", file: string, symbol: string): Ghost => ({
     id: `${dir}:${file}::${symbol}`, file, symbol, dir, count: 0,
-    label: symbol === "<module>" ? `${fileStem(file)} (module code)` : symbol,
+    label: symbol === "<module>" ? (/\.(vue|svelte)$/.test(file) ? `<${fileStem(file)}>` : `${fileStem(file)} (module code)`) : symbol,
     sub: file.split("/").slice(-2).join("/"),
   });
   for (const s of syms) {
@@ -243,7 +253,7 @@ export async function layoutMap(a: Analysis, trail: string[]): Promise<{ nodes: 
   await fontsReady();
   const syms = mapSymbols(a);
   const ids = new Set(syms.map((s) => s.id));
-  const label = (s: Sym) => (s.kind === "module" ? "module code" : s.qualname);
+  const label = (s: Sym) => (s.kind === "module" ? moduleLabel(a) : s.qualname);
   const { ghosts, edges: ghostEdges } = a.repo ? ghostsFor(a, syms) : { ghosts: [], edges: [] };
   // wide enough for the name and for the line under it (size, pill, complexity bar), so neither wraps
   const subWidth = (s: Sym) => {
@@ -334,7 +344,7 @@ const plural = (n: number, w: string) => `${n.toLocaleString()} ${w}${n === 1 ? 
 
 export function dirSummary(index: RepoIndex, path: string): string {
   const st = index.dirs[path].stats;
-  if (st.py_files) return `${plural(st.py_files, "Python file")}, ${st.lines.toLocaleString()} lines`;
+  if (st.read_files) return `${plural(st.read_files, "file")} of code, ${st.lines.toLocaleString()} lines`;
   return `${plural(st.files, "file")}`;
 }
 
@@ -392,7 +402,7 @@ function layers(ids: string[], pairs: FolderPair[]): { level: Map<string, number
 }
 
 /**
- * One folder's contents as boxes (its subfolders and Python files) in layers: what uses others sits
+ * One folder's contents as boxes (its subfolders and files of code) in layers: what uses others sits
  * above what it uses. Places outside the folder that it talks to are faded boxes, users above and
  * things it relies on below. Busy folders show only the strongest link per box until you point at one.
  */
@@ -411,7 +421,7 @@ export async function layoutFolder(index: RepoIndex, dir: string, width = 900): 
   for (const d of node.dirs) {
     const sub = index.dirs[d];
     items.push({ id: d, kind: "dir", path: d, label: `${sub.name}/`, sub: sub.doc ?? dirSummary(index, d),
-                 dim: sub.stats.py_files === 0 });
+                 dim: !sub.stats.read_files });
   }
   for (const f of node.files) {
     const info = index.files[f];
@@ -419,8 +429,9 @@ export async function layoutFolder(index: RepoIndex, dir: string, width = 900): 
     const kinds = info.symbols.map((r) => r[1]);
     const funcs = kinds.filter((k) => k === "function" || k === "method").length;
     const classes = kinds.filter((k) => k === "class").length;
-    const sub = info.doc ?? ([classes && plural(classes, "class"), funcs && plural(funcs, "function")].filter(Boolean).join(", ")
-      || `${plural(info.lines, "line")}`);
+    const rules = kinds.filter((k) => k === "rule").length;
+    const sub = info.doc ?? ([classes && plural(classes, "class"), funcs && plural(funcs, "function"),
+                              rules && plural(rules, "rule")].filter(Boolean).join(", ") || `${plural(info.lines, "line")}`);
     items.push({ id: f, kind: "file", path: f, label: f.split("/").pop()!, sub, entry: entryFiles.has(f),
                  usedBy: usedBy.get(f)?.size ?? 0 });
   }

@@ -193,13 +193,14 @@ export default function App() {
           <div className="file-meta">
             <strong>{screen.analysis.file.name}</strong>
             <span>{screen.analysis.file.lines} lines</span>
-            {screen.analysis.file.has_errors && <span className="warn" title="This file has mistakes in its code, so parts of it may be missing">code errors</span>}
+            {screen.analysis.file.has_errors && <span className="warn" title="Some of this file couldn't be read, so parts of it may be missing from the outline and maps">code errors</span>}
           </div>
         )}
         {screen.kind === "repo" && repoIndex && (
           <div className="file-meta">
             <strong title={repoIndex.root}>{repoIndex.source ? `${repoIndex.source.owner}/${repoIndex.source.repo}` : repoIndex.name}</strong>
-            <span>{repoIndex.stats.py_analyzed.toLocaleString()} Python files</span>
+            <span title={(repoIndex.read_languages ?? []).map((l) => `${l.files.toLocaleString()} ${l.name}`).join(", ")}>
+              {(repoIndex.stats.read ?? repoIndex.stats.py_analyzed).toLocaleString()} files read</span>
             {repoIndex.git?.branch && <span className="branch">{repoIndex.git.branch}</span>}
           </div>
         )}
@@ -285,7 +286,7 @@ export default function App() {
             </div>
           )}
           <button className={screen.kind === "welcome" ? "ghost" : "primary"} onClick={() => fileInput.current?.click()}>Open file</button>
-          <input ref={fileInput} type="file" accept=".py,.pyw,.pyi" hidden onChange={(e) => { openFile(e.target.files?.[0]); e.target.value = ""; }} />
+          <input ref={fileInput} type="file" accept=".py,.pyw,.pyi,.js,.mjs,.cjs,.jsx,.ts,.mts,.cts,.tsx,.vue,.svelte,.html,.htm,.css" hidden onChange={(e) => { openFile(e.target.files?.[0]); e.target.value = ""; }} />
         </div>
       </header>
 
@@ -302,8 +303,8 @@ export default function App() {
             <h1>Read code the way you'd explain it to someone.</h1>
             <p className="lede">
               {publicMode
-                ? "Paste a link to a public GitHub repository to get an overview, a map of how its folders and files depend on each other, and a flowchart for every function. Or read a single Python file."
-                : "Open a project folder or a GitHub link to get an overview, a map of how its folders and files depend on each other, and a flowchart for every function. Or read a single Python file."}
+                ? "Paste a link to a public GitHub repository to get an overview, a map of how its folders and files depend on each other, and a flowchart for every function. Or read a single file."
+                : "Open a project folder or a GitHub link to get an overview, a map of how its folders and files depend on each other, and a flowchart for every function. Or read a single file."}
             </p>
             <section className="start-block">
               <h2>{publicMode ? "Read a project on GitHub" : "Read a project"}</h2>
@@ -317,7 +318,7 @@ export default function App() {
                       {i < EXAMPLES.length - 1 ? ", " : ". "}
                     </span>
                   ))}
-                  Python projects work best. The first read of a big one takes a minute or two.
+                  Python, JavaScript and TypeScript projects work best. The first read of a big one takes a minute or two.
                 </p>
               ) : null}
             </section>
@@ -325,13 +326,13 @@ export default function App() {
               <h2>Read one file</h2>
               <div className="drop" onClick={() => fileInput.current?.click()} role="button" tabIndex={0}
                 onKeyDown={(e) => e.key === "Enter" && fileInput.current?.click()}>
-                <strong>{busy ? "Reading…" : "Drop a .py file here"}</strong>
+                <strong>{busy ? "Reading…" : "Drop a file of code here"}</strong>
                 <span>or click to choose one</span>
               </div>
               <div className="paste">
                 <textarea value={paste} onChange={(e) => setPaste(e.target.value)} placeholder="…or paste code here" spellCheck={false} rows={5} />
                 <div className="paste-actions">
-                  <button className="primary" disabled={!paste.trim() || busy} onClick={() => analyze("pasted.py", paste)}>Read pasted code</button>
+                  <button className="primary" disabled={!paste.trim() || busy} onClick={() => analyze("pasted", paste)}>Read pasted code</button>
                   <button className="ghost" disabled={busy} onClick={() => api.example().then(showFile).catch((e) => setError(e.message))}>Try an example file</button>
                 </div>
               </div>

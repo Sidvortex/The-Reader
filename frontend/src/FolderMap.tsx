@@ -103,7 +103,8 @@ function Inner({ index, dir, onGo }: Props) {
     const st = index.dirs[dir].stats;
     return (
       <div className="canvas-empty">
-        <p>No Python here. This folder has {st.files.toLocaleString()} file{st.files === 1 ? "" : "s"} in languages The Reader doesn't analyze yet.</p>
+        <p>Nothing here The Reader can read. This folder has {st.files.toLocaleString()} file{st.files === 1 ? "" : "s"} in other
+          languages or formats.</p>
       </div>
     );
   }
@@ -123,7 +124,7 @@ function Inner({ index, dir, onGo }: Props) {
   );
 }
 
-/** A folder's subfolders and Python files as boxes; arrows point from a file to what it uses. */
+/** A folder's subfolders and files of code as boxes; arrows point from a file to what it uses. */
 export default function FolderMap(props: Props) {
   return (
     <ReactFlowProvider>

@@ -13,22 +13,49 @@ function highlighter() {
   return hl;
 }
 
-function useTokens(source: string) {
+// each language's grammar is fetched the first time a file in it is shown
+const GRAMMARS: Record<string, () => Promise<unknown>> = {
+  javascript: () => import("@shikijs/langs/javascript"),
+  jsx: () => import("@shikijs/langs/jsx"),
+  typescript: () => import("@shikijs/langs/typescript"),
+  tsx: () => import("@shikijs/langs/tsx"),
+  vue: () => import("@shikijs/langs/vue"),
+  svelte: () => import("@shikijs/langs/svelte"),
+  html: () => import("@shikijs/langs/html"),
+  css: () => import("@shikijs/langs/css"),
+};
+const loading = new Map<string, Promise<void>>();
+
+async function withLang(lang: string): Promise<[HighlighterCore, string]> {
+  const h = await highlighter();
+  if (lang === "python" || !GRAMMARS[lang]) return [h, GRAMMARS[lang] ? lang : "python"];
+  if (!loading.has(lang)) {
+    loading.set(lang, GRAMMARS[lang]().then((m: any) => h.loadLanguage(m.default ?? m)));
+  }
+  try {
+    await loading.get(lang);
+    return [h, lang];
+  } catch {
+    return [h, "text"];  // the code still shows, just without colours
+  }
+}
+
+function useTokens(source: string, lang: string) {
   const [tokens, setTokens] = useState<ThemedToken[][] | null>(null);
   useEffect(() => {
     let live = true;
     setTokens(null);
-    highlighter().then((h) => {
+    withLang(lang).then(([h, l]) => {
       if (!live) return;
       const r = h.codeToTokens(source, {
-        lang: "python",
+        lang: l as any,
         themes: { light: "github-light-default", dark: "github-dark-dimmed" },
         defaultColor: "light",
       });
       setTokens(r.tokens);
     });
     return () => { live = false; };
-  }, [source]);
+  }, [source, lang]);
   return tokens;
 }
 
@@ -43,7 +70,7 @@ type Props = {
 
 /** Syntax-highlighted code where every call into this file is a link you can follow. */
 export default memo(function Code({ analysis, from, to, highlight, onFollow, onFollowExternal }: Props) {
-  const tokens = useTokens(analysis.source);
+  const tokens = useTokens(analysis.source, analysis.file.lang ?? "python");
   const plain = useMemo(() => analysis.source.split("\n"), [analysis.source]);
   const callsByLine = useMemo(() => {
     const m = new Map<number, Call[]>();

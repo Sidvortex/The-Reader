@@ -13,7 +13,7 @@ export type Call = {
 
 export type Sym = {
   id: string;
-  kind: "function" | "method" | "class" | "module";
+  kind: "function" | "method" | "class" | "module" | "rule" | "element"; // rule: CSS, element: HTML outline
   name: string;
   qualname: string;
   parent: string | null;
@@ -35,6 +35,9 @@ export type Sym = {
   imported_by?: string[]; // files that import it, when nothing calls it directly
   name_used_in?: string[]; // files where `.name` appears on a value of unknown class
   referenced?: boolean; // its name is passed on as a value somewhere in its file
+  component?: boolean; // a function that returns markup (JSX)
+  hook?: boolean; // a React-style hook: useSomething
+  role?: "component" | "page"; // the "<module>" symbol of a .vue/.svelte component or an HTML page
 };
 
 export type FlowNodeKind =
@@ -50,6 +53,8 @@ export type Analysis = {
   file: {
     name: string; language: string; lines: number; hash: string; docstring: string | null; has_errors: boolean;
     path?: string; main_guard?: number | null;
+    lang?: string; // highlighting: python, javascript, jsx, typescript, tsx, vue, svelte, html, css
+    component?: boolean; // a .vue or .svelte single-file component
   };
   source: string;
   imports: { module: string; names: { name: string; alias: string | null }[]; alias: string | null; line: number }[];
@@ -75,7 +80,10 @@ export type Source = { kind: "github"; owner: string; repo: string; ref: string 
 
 export type Explanation = { markdown: string; source: "ai" | "structural"; cached: boolean };
 
-export type DirStats = { files: number; code_files: number; py_files: number; lines: number; functions: number; classes: number };
+export type DirStats = {
+  files: number; code_files: number; py_files: number; lines: number; functions: number; classes: number;
+  read_files: number; // files The Reader read: Python, JavaScript, TypeScript, Vue, Svelte, HTML, CSS
+};
 
 export type RepoDir = {
   path: string; name: string; parent: string | null; dirs: string[]; files: string[]; doc: string | null; stats: DirStats;
@@ -95,7 +103,8 @@ export type RepoIndex = {
   id: string; root: string; name: string;
   source?: Source | null;
   git: { branch: string | null; commit: string } | null;
-  stats: DirStats & { py_analyzed: number };
+  stats: DirStats & { py_analyzed: number; read: number };
+  read_languages?: { name: string; files: number }[];
   languages: { name: string; files: number; lines: number }[];
   readme: { path: string; title: string | null; excerpt: string | null } | null;
   entry_points: EntryPoint[];

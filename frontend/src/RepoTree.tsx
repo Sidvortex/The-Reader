@@ -82,12 +82,12 @@ export default memo(forwardRef<HTMLInputElement, Props>(function RepoTree({ inde
       const sub = index.dirs[d];
       const isOpen = open.has(d);
       rows.push(
-        <div key={`d:${d}`} className={`trow dir${loc.path === d ? " sel" : ""}${sub.stats.py_files ? "" : " dim"}`} style={{ paddingLeft: 6 + depth * 14 }}>
+        <div key={`d:${d}`} className={`trow dir${loc.path === d ? " sel" : ""}${sub.stats.read_files ? "" : " dim"}`} style={{ paddingLeft: 6 + depth * 14 }}>
           <button className="chev" onClick={() => toggle(d)} aria-label={isOpen ? `Collapse ${sub.name}` : `Expand ${sub.name}`}
             aria-expanded={isOpen}>{isOpen ? "▾" : "▸"}</button>
           <button className="tlabel" onClick={() => { onGo(d); setOpen((o) => new Set([...o, d])); }} title={sub.doc ?? d}>
             <span className="tname">{sub.name}/</span>
-            {sub.stats.py_files > 0 && <span className="tcount">{sub.stats.py_files}</span>}
+            {sub.stats.read_files > 0 && <span className="tcount">{sub.stats.read_files}</span>}
           </button>
         </div>,
       );
